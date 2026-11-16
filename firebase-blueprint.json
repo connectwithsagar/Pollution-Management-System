@@ -1,0 +1,140 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account preferences and role metadata.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "preferredStandard": { "type": "string", "enum": ["US_AQI", "EU_AQI"] },
+        "refreshIntervalSec": { "type": "number" },
+        "emailAlertsEnabled": { "type": "boolean" },
+        "theme": { "type": "string", "enum": ["dark", "light"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "preferredStandard", "refreshIntervalSec", "emailAlertsEnabled", "theme", "createdAt", "updatedAt"]
+    },
+    "CustomMarker": {
+      "title": "CustomMarker",
+      "description": "User-created custom geographic marker for pollution lookup.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 500 },
+        "markerType": { "type": "string", "enum": ["home", "school", "factory", "hospital", "monitoring_point"] },
+        "lat": { "type": "number" },
+        "lon": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "description", "markerType", "lat", "lon", "createdAt", "updatedAt"]
+    },
+    "SavedLocation": {
+      "title": "SavedLocation",
+      "description": "Saved city or coordinate location for quick monitoring.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "country": { "type": "string", "maxLength": 100 },
+        "region": { "type": "string", "maxLength": 120 },
+        "lat": { "type": "number" },
+        "lon": { "type": "number" },
+        "isPrimary": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "lat", "lon", "isPrimary", "createdAt"]
+    },
+    "AlertRule": {
+      "title": "AlertRule",
+      "description": "Threshold rule for air quality alerting.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "locationName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "lat": { "type": "number" },
+        "lon": { "type": "number" },
+        "metric": { "type": "string", "enum": ["us_aqi", "eu_aqi", "pm2_5", "pm10", "no2", "o3", "co", "so2"] },
+        "threshold": { "type": "number" },
+        "enabled": { "type": "boolean" },
+        "emailNotify": { "type": "boolean" },
+        "lastTriggeredAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "locationName", "lat", "lon", "metric", "threshold", "enabled", "emailNotify", "createdAt", "updatedAt"]
+    },
+    "PollutionAlert": {
+      "title": "PollutionAlert",
+      "description": "Triggered pollution threshold alert record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "ruleId": { "type": "string", "maxLength": 128 },
+        "locationName": { "type": "string", "maxLength": 120 },
+        "metric": { "type": "string", "maxLength": 32 },
+        "observedValue": { "type": "number" },
+        "threshold": { "type": "number" },
+        "sourceType": { "type": "string", "enum": ["observed", "modeled", "forecast"] },
+        "sourceLabel": { "type": "string", "maxLength": 120 },
+        "severity": { "type": "string", "enum": ["moderate", "high", "critical"] },
+        "status": { "type": "string", "enum": ["active", "acknowledged", "dismissed"] },
+        "dedupeKey": { "type": "string", "maxLength": 160 },
+        "triggeredAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "ruleId", "locationName", "metric", "observedValue", "threshold", "sourceType", "sourceLabel", "severity", "status", "dedupeKey", "triggeredAt"]
+    },
+    "IotSensorDevice": {
+      "title": "IotSensorDevice",
+      "description": "Registered physical ESP32/IoT air-quality sensor node.",
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string", "maxLength": 128 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "lat": { "type": "number" },
+        "lon": { "type": "number" },
+        "hardwareModel": { "type": "string", "maxLength": 120 },
+        "calibrationOffsetPm25": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "maintenance", "offline"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["deviceId", "ownerId", "name", "lat", "lon", "hardwareModel", "calibrationOffsetPm25", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profiles keyed by Firebase Auth UID."
+    },
+    "/markers/{markerId}": {
+      "schema": { "$ref": "#/entities/CustomMarker" },
+      "description": "Private custom map markers owned by users."
+    },
+    "/savedLocations/{locationId}": {
+      "schema": { "$ref": "#/entities/SavedLocation" },
+      "description": "User saved cities and monitored coordinates."
+    },
+    "/alertRules/{ruleId}": {
+      "schema": { "$ref": "#/entities/AlertRule" },
+      "description": "User-configured pollutant/AQI alert rules."
+    },
+    "/alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/PollutionAlert" },
+      "description": "User alert history and acknowledgement states."
+    },
+    "/iotSensors/{deviceId}": {
+      "schema": { "$ref": "#/entities/IotSensorDevice" },
+      "description": "Registered ESP32 IoT sensor devices."
+    }
+  }
+}

@@ -1,0 +1,314 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'whitesangjr07@gmail.com'
+      );
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'email', 'displayName', 'role', 'preferredStandard',
+        'refreshIntervalSec', 'emailAlertsEnabled', 'theme', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'email', 'displayName', 'role', 'preferredStandard',
+        'refreshIntervalSec', 'emailAlertsEnabled', 'theme', 'createdAt', 'updatedAt'
+      ]) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+      data.role in ['user', 'admin'] &&
+      data.preferredStandard in ['US_AQI', 'EU_AQI'] &&
+      data.refreshIntervalSec is int && data.refreshIntervalSec >= 60 && data.refreshIntervalSec <= 3600 &&
+      data.emailAlertsEnabled is bool &&
+      data.theme in ['dark', 'light'] &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidCustomMarker(data) {
+      return data.keys().hasAll([
+        'id', 'ownerId', 'name', 'description', 'markerType', 'lat', 'lon', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'ownerId', 'name', 'description', 'markerType', 'lat', 'lon', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+      data.description is string && data.description.size() <= 500 &&
+      data.markerType in ['home', 'school', 'factory', 'hospital', 'monitoring_point'] &&
+      data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+      data.lon is number && data.lon >= -180 && data.lon <= 180 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidSavedLocation(data) {
+      return data.keys().hasAll([
+        'id', 'ownerId', 'name', 'country', 'region', 'lat', 'lon', 'isPrimary', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'ownerId', 'name', 'country', 'region', 'lat', 'lon', 'isPrimary', 'createdAt'
+      ]) &&
+      isValidId(data.id) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+      data.country is string && data.country.size() <= 100 &&
+      data.region is string && data.region.size() <= 120 &&
+      data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+      data.lon is number && data.lon >= -180 && data.lon <= 180 &&
+      data.isPrimary is bool &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidAlertRule(data) {
+      return data.keys().hasAll([
+        'id', 'ownerId', 'locationName', 'lat', 'lon', 'metric',
+        'threshold', 'enabled', 'emailNotify', 'lastTriggeredAt', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'ownerId', 'locationName', 'lat', 'lon', 'metric',
+        'threshold', 'enabled', 'emailNotify', 'lastTriggeredAt', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.locationName is string && data.locationName.size() >= 1 && data.locationName.size() <= 120 &&
+      data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+      data.lon is number && data.lon >= -180 && data.lon <= 180 &&
+      data.metric in ['us_aqi', 'eu_aqi', 'pm2_5', 'pm10', 'no2', 'o3', 'co', 'so2'] &&
+      data.threshold is number && data.threshold >= 0 && data.threshold <= 100000 &&
+      data.enabled is bool &&
+      data.emailNotify is bool &&
+      data.lastTriggeredAt is string && data.lastTriggeredAt.size() <= 64 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidPollutionAlert(data) {
+      return data.keys().hasAll([
+        'id', 'ownerId', 'ruleId', 'locationName', 'metric', 'observedValue',
+        'threshold', 'sourceType', 'sourceLabel', 'severity', 'status', 'dedupeKey', 'triggeredAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'ownerId', 'ruleId', 'locationName', 'metric', 'observedValue',
+        'threshold', 'sourceType', 'sourceLabel', 'severity', 'status', 'dedupeKey', 'triggeredAt'
+      ]) &&
+      isValidId(data.id) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.ruleId is string && data.ruleId.size() >= 1 && data.ruleId.size() <= 128 &&
+      data.locationName is string && data.locationName.size() >= 1 && data.locationName.size() <= 120 &&
+      data.metric is string && data.metric.size() >= 1 && data.metric.size() <= 32 &&
+      data.observedValue is number && data.observedValue >= 0 &&
+      data.threshold is number && data.threshold >= 0 &&
+      data.sourceType in ['observed', 'modeled', 'forecast'] &&
+      data.sourceLabel is string && data.sourceLabel.size() >= 1 && data.sourceLabel.size() <= 120 &&
+      data.severity in ['moderate', 'high', 'critical'] &&
+      data.status in ['active', 'acknowledged', 'dismissed'] &&
+      data.dedupeKey is string && data.dedupeKey.size() >= 1 && data.dedupeKey.size() <= 160 &&
+      data.triggeredAt is timestamp;
+    }
+
+    function isValidIotSensor(data) {
+      return data.keys().hasAll([
+        'deviceId', 'ownerId', 'name', 'lat', 'lon', 'hardwareModel',
+        'calibrationOffsetPm25', 'status', 'lastReadingAt', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'deviceId', 'ownerId', 'name', 'lat', 'lon', 'hardwareModel',
+        'calibrationOffsetPm25', 'status', 'lastReadingAt', 'createdAt'
+      ]) &&
+      isValidId(data.deviceId) &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+      data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+      data.lon is number && data.lon >= -180 && data.lon <= 180 &&
+      data.hardwareModel is string && data.hardwareModel.size() >= 1 && data.hardwareModel.size() <= 120 &&
+      data.calibrationOffsetPm25 is number && data.calibrationOffsetPm25 >= -50 && data.calibrationOffsetPm25 <= 50 &&
+      data.status in ['active', 'maintenance', 'offline'] &&
+      data.lastReadingAt is string && data.lastReadingAt.size() <= 64 &&
+      data.createdAt is timestamp;
+    }
+
+    match /admins/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if false;
+      allow write: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().role == 'user' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) && (
+          (
+            request.auth.uid == userId &&
+            incoming().uid == existing().uid &&
+            incoming().role == existing().role &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'preferredStandard', 'refreshIntervalSec',
+              'emailAlertsEnabled', 'theme', 'updatedAt'
+            ])
+          ) || (
+            isAdmin() &&
+            incoming().uid == existing().uid &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+    }
+
+    match /markers/{markerId} {
+      allow get: if isVerifiedUser() && isValidId(markerId) && resource.data.ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() &&
+        isValidId(markerId) &&
+        isValidCustomMarker(incoming()) &&
+        incoming().id == markerId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(markerId) &&
+        isValidCustomMarker(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'description', 'markerType', 'lat', 'lon', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedUser() && isValidId(markerId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /savedLocations/{locationId} {
+      allow get: if isVerifiedUser() && isValidId(locationId) && resource.data.ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() &&
+        isValidId(locationId) &&
+        isValidSavedLocation(incoming()) &&
+        incoming().id == locationId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(locationId) &&
+        isValidSavedLocation(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'isPrimary']);
+      allow delete: if isVerifiedUser() && isValidId(locationId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /alertRules/{ruleId} {
+      allow get: if isVerifiedUser() && isValidId(ruleId) && resource.data.ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() &&
+        isValidId(ruleId) &&
+        isValidAlertRule(incoming()) &&
+        incoming().id == ruleId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(ruleId) &&
+        isValidAlertRule(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'threshold', 'enabled', 'emailNotify', 'lastTriggeredAt', 'updatedAt'
+        ]);
+      allow delete: if isVerifiedUser() && isValidId(ruleId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /alerts/{alertId} {
+      allow get: if isVerifiedUser() && isValidId(alertId) && resource.data.ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() &&
+        isValidId(alertId) &&
+        isValidPollutionAlert(incoming()) &&
+        incoming().id == alertId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().triggeredAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(alertId) &&
+        isValidPollutionAlert(incoming()) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().ruleId == existing().ruleId &&
+        incoming().dedupeKey == existing().dedupeKey &&
+        incoming().triggeredAt == existing().triggeredAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+      allow delete: if isVerifiedUser() && isValidId(alertId) && existing().ownerId == request.auth.uid;
+    }
+
+    match /iotSensors/{deviceId} {
+      allow get: if isVerifiedUser() && isValidId(deviceId) && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(deviceId) &&
+        isValidIotSensor(incoming()) &&
+        incoming().deviceId == deviceId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(deviceId) &&
+        isValidIotSensor(incoming()) &&
+        (existing().ownerId == request.auth.uid || isAdmin()) &&
+        incoming().deviceId == existing().deviceId &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'lat', 'lon', 'calibrationOffsetPm25', 'status', 'lastReadingAt'
+        ]);
+      allow delete: if isVerifiedUser() && isValidId(deviceId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+  }
+}

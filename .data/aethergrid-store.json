@@ -1,0 +1,182 @@
+{
+  "users": [
+    {
+      "uid": "loc-514ccf02-978f-44",
+      "email": "alice_1794814200776@example.com",
+      "displayName": "Alice",
+      "passwordHash": "2136a9f112351564ad05475db63c19da:c9b07749a53b0ddcec0a76e17fc3f5a58b5d3879e00979c5bd3a2628da2f148686d083278664ac685ae7454cd65135f182e21c0c4635e09a8a8e14c23ff9ba5b",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T07:30:00.796Z",
+      "updatedAt": "2026-11-16T07:30:00.796Z"
+    },
+    {
+      "uid": "loc-9e0044ec-e8c7-40",
+      "email": "bob_1794814200776@example.com",
+      "displayName": "Bob",
+      "passwordHash": "a2d61bc87a45f17dd61912733fc1f3aa:d47da3ffa332b119d94e817f517e34d70fea9b984e0c06d6277c54b9fbf3566bc749dbd77361ce4144b094e59fd88f013e0a3fa1490a70dc1b8b432fc3e1e9e9",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T07:30:00.864Z",
+      "updatedAt": "2026-11-16T07:30:00.864Z"
+    },
+    {
+      "uid": "loc-e6aa88a6-3bfc-4e",
+      "email": "alice_1794824737098@example.com",
+      "displayName": "Alice",
+      "passwordHash": "d407a2f424cde1a5baf869aaaf8bb6ce:29175a41ae542d3372f376cd34e6856f2598c21ef0f06f72f50954a09713c4d43a85f8723918339b3c2e397a34cd7f31f363441bc8a9984a726caac94df26098",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T10:25:37.123Z",
+      "updatedAt": "2026-11-16T10:25:37.123Z"
+    },
+    {
+      "uid": "loc-cac9cc73-4578-4d",
+      "email": "bob_1794824737098@example.com",
+      "displayName": "Bob",
+      "passwordHash": "b4dd4c3e986e1d0e8694c8835e9d9a01:d150fd37bfdbbe8abc6cf64aa07a1290b04073f9c3c1c02dd7361ba451bddf2000dc388949cd7ce70a20f6bd66b36274d8fb02ca003b8c5c3af00231151c3b7e",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T10:25:37.196Z",
+      "updatedAt": "2026-11-16T10:25:37.196Z"
+    },
+    {
+      "uid": "loc-fd46e6e8-4d91-43",
+      "email": "alice_1794824757732@example.com",
+      "displayName": "Alice",
+      "passwordHash": "3c29a0debf0823c13e374b4d71afe799:6ef45100d0875135cbc5021ba7b0ce616bbb2c29d84ce8e4f95d902689c23eedc79bac429b7a270b74d0a2f3dc75e2c5fb7c7396136663ee92a2d2b9238a6258",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T10:25:57.753Z",
+      "updatedAt": "2026-11-16T10:25:57.753Z"
+    },
+    {
+      "uid": "loc-8851d791-f358-43",
+      "email": "bob_1794824757732@example.com",
+      "displayName": "Bob",
+      "passwordHash": "6f73b02317fc2a768a614aac7213063e:d491c97eac5ae26bfb4695259866c4aad14b66ad81a91e333e7d92e86fd7e24c62a60fa703375deb9f9df7dcbea9723b4e5af997c9886fbb04b17ebc3a39584a",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T10:25:57.823Z",
+      "updatedAt": "2026-11-16T10:25:57.823Z"
+    },
+    {
+      "uid": "loc-fac22dde-8ecd-49",
+      "email": "alice_1794825220149@example.com",
+      "displayName": "Alice",
+      "passwordHash": "cf0ed233a50f025e9dfd1aa2b3de58c1:b8c819973e2247913fbd01f456f55c1715046c0c1a88f0acf81b3f90176cd5826acdc31bc8a282a584d8d79c814b157a19e020c5f286c051ad8b9c7293d228ae",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T10:33:40.167Z",
+      "updatedAt": "2026-11-16T10:33:40.167Z"
+    },
+    {
+      "uid": "loc-e179d43b-3816-4c",
+      "email": "bob_1794825220149@example.com",
+      "displayName": "Bob",
+      "passwordHash": "1cfa208aa02217705d3ac05c58e84357:05ba9ec85216f381afd3ed2f9e5d4ab07c6a3f0acffbf78da7836c6c355282a6bd55bd53926e3109d64372fdb3acf02b51628720b10e3f1aa4d7c9ba85b8ee92",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-16T10:33:40.242Z",
+      "updatedAt": "2026-11-16T10:33:40.242Z"
+    }
+  ],
+  "markers": [],
+  "savedLocations": [],
+  "alertRules": [],
+  "alerts": [],
+  "iotDevices": [
+    {
+      "deviceId": "esp32-node-alpha-01",
+      "ownerId": "system",
+      "name": "Civic Center ESP32 Node 01",
+      "lat": 37.7793,
+      "lon": -122.4193,
+      "hardwareModel": "ESP32-S3 + Sensirion SPS30 + BME280",
+      "calibrationOffsetPm25": -0.4,
+      "status": "active",
+      "lastReadingAt": "2026-11-16T10:33:40.398Z",
+      "createdAt": "2026-11-16T07:30:00.694Z"
+    }
+  ],
+  "iotReadings": [
+    {
+      "id": "iot-b989a159-92c",
+      "deviceId": "esp32-node-alpha-01",
+      "pm2_5": 21.6,
+      "pm10": 35,
+      "temperature": 20.5,
+      "humidity": 55,
+      "qualityFlag": "calibrated",
+      "calibrationOffsetApplied": -0.4,
+      "recordedAt": "2026-11-16T10:33:40.398Z"
+    },
+    {
+      "id": "iot-bef8ecad-187",
+      "deviceId": "esp32-node-alpha-01",
+      "pm2_5": 21.6,
+      "pm10": 35,
+      "temperature": 20.5,
+      "humidity": 55,
+      "qualityFlag": "calibrated",
+      "calibrationOffsetApplied": -0.4,
+      "recordedAt": "2026-11-16T10:25:57.969Z"
+    },
+    {
+      "id": "iot-a32cd3c4-026",
+      "deviceId": "esp32-node-alpha-01",
+      "pm2_5": 21.6,
+      "pm10": 35,
+      "temperature": 20.5,
+      "humidity": 55,
+      "qualityFlag": "calibrated",
+      "calibrationOffsetApplied": -0.4,
+      "recordedAt": "2026-11-16T10:25:37.360Z"
+    },
+    {
+      "id": "iot-9a790a9f-cd1",
+      "deviceId": "esp32-node-alpha-01",
+      "pm2_5": 21.6,
+      "pm10": 35,
+      "temperature": 20.5,
+      "humidity": 55,
+      "qualityFlag": "calibrated",
+      "calibrationOffsetApplied": -0.4,
+      "recordedAt": "2026-11-16T07:30:01.025Z"
+    }
+  ],
+  "adminSettings": {
+    "defaultRefreshIntervalSec": 300,
+    "defaultAqiStandard": "US_AQI",
+    "enableOpenAq": false,
+    "enableSensorCommunity": true,
+    "enableOpenMeteo": true,
+    "defaultCityName": "San Francisco",
+    "defaultLat": 37.7749,
+    "defaultLon": -122.4194
+  }
+}

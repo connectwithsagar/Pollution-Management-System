@@ -1,0 +1,6 @@
+{
+  "name": "AetherGrid",
+  "description": "AI-based Smart City Pollution Management System with live OpenAQ/Sensor.Community and Open-Meteo telemetry, interactive Leaflet mapping, custom markers, Python Random Forest forecasting, DBSCAN hotspot analysis, and real-time threshold alerts.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
