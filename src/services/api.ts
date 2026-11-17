@@ -218,6 +218,7 @@ export const api = {
   createAlertRule: (
     token: string,
     payload: {
+      id?: string;
       locationName: string;
       lat: number;
       lon: number;

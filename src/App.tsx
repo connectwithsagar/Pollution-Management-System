@@ -157,6 +157,11 @@ function DashboardShell() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const socketRef = useRef<ReturnType<typeof createTelemetrySocket> | null>(null);
+  const pushRealtimeAlertRef = useRef(pushRealtimeAlert);
+
+  useEffect(() => {
+    pushRealtimeAlertRef.current = pushRealtimeAlert;
+  }, [pushRealtimeAlert]);
 
   // Sync dark/light mode class on <html>
   useEffect(() => {
@@ -267,7 +272,7 @@ function DashboardShell() {
         setLastRefreshIso(new Date().toISOString());
       },
       (alert: PollutionAlert) => {
-        pushRealtimeAlert(alert);
+        pushRealtimeAlertRef.current(alert);
         showToast(
           `Alert: ${alert.locationName} ${alert.metric.toUpperCase()} at ${alert.observedValue}`
         );

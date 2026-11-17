@@ -598,9 +598,15 @@ export function createApp() {
       return;
     }
 
+    const requestedId =
+      typeof req.body?.id === 'string'
+        ? req.body.id.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 128)
+        : '';
+    const ruleId = requestedId.length >= 4 ? requestedId : `rul-${crypto.randomUUID().slice(0, 12)}`;
+
     const now = new Date().toISOString();
     const rule = dbStore.createAlertRule({
-      id: `rul-${crypto.randomUUID().slice(0, 12)}`,
+      id: ruleId,
       ownerId: req.authUser!.uid,
       locationName: locationName.slice(0, 120),
       lat,

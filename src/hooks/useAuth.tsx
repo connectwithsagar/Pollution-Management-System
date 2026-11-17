@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import {
   onAuthStateChanged,
   signInWithPopup,
@@ -110,6 +110,43 @@ function tsToIso(val: unknown): string {
   return new Date().toISOString();
 }
 
+function sanitizeAlertForFirestore(
+  alert: PollutionAlert,
+  ownerUid: string,
+  statusOverride?: 'active' | 'acknowledged' | 'dismissed'
+) {
+  const validSourceTypes = new Set(['observed', 'modeled', 'forecast']);
+  const validSeverities = new Set(['moderate', 'high', 'critical']);
+  const validStatuses = new Set(['active', 'acknowledged', 'dismissed']);
+
+  const safeId = String(alert.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 128) || `alt-${crypto.randomUUID().slice(0, 12)}`;
+  const safeRuleId = String(alert.ruleId || 'rul-default').slice(0, 128) || 'rul-default';
+  const safeLocation = String(alert.locationName || 'Monitored Location').trim().slice(0, 120) || 'Monitored Location';
+  const safeMetric = String(alert.metric || 'pm2_5').trim().slice(0, 32) || 'pm2_5';
+  const safeSourceType = validSourceTypes.has(alert.sourceType) ? alert.sourceType : 'modeled';
+  const safeSourceLabel = String(alert.sourceLabel || 'Open-Meteo CAMS').trim().slice(0, 120) || 'Open-Meteo CAMS';
+  const safeSeverity = validSeverities.has(alert.severity) ? alert.severity : 'moderate';
+  const candidateStatus = statusOverride ?? alert.status;
+  const safeStatus = validStatuses.has(candidateStatus) ? candidateStatus : 'active';
+  const safeDedupe = String(alert.dedupeKey || `${safeRuleId}:${safeMetric}`).trim().slice(0, 160) || `${safeRuleId}:${safeMetric}`;
+
+  return {
+    id: safeId,
+    ownerId: ownerUid,
+    ruleId: safeRuleId,
+    locationName: safeLocation,
+    metric: safeMetric,
+    observedValue: Math.max(0, Number.isFinite(Number(alert.observedValue)) ? Number(alert.observedValue) : 0),
+    threshold: Math.max(0, Number.isFinite(Number(alert.threshold)) ? Number(alert.threshold) : 0),
+    sourceType: safeSourceType,
+    sourceLabel: safeSourceLabel,
+    severity: safeSeverity,
+    status: safeStatus,
+    dedupeKey: safeDedupe,
+    triggeredAt: serverTimestamp(),
+  };
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -119,6 +156,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [alertRules, setAlertRules] = useState<AlertRule[]>([]);
   const [alerts, setAlerts] = useState<PollutionAlert[]>([]);
   const [preferredStandard, setPreferredStandard] = useState<AqiStandard>('US_AQI');
+
+  const userRef = useRef<AppUser | null>(null);
+  const alertsRef = useRef<PollutionAlert[]>([]);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  useEffect(() => {
+    alertsRef.current = alerts;
+  }, [alerts]);
 
   const refreshLocalData = useCallback(async (jwt: string) => {
     try {
@@ -530,11 +578,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     emailNotify: boolean;
   }) => {
     if (!user || !token) throw new Error('Please sign in to create alert rules.');
+    const ruleId = `rul-${crypto.randomUUID().slice(0, 12)}`;
     if (user.authProvider === 'firebase') {
-      const id = `rul-${crypto.randomUUID().slice(0, 12)}`;
       try {
-        await setDoc(doc(db, 'alertRules', id), {
-          id,
+        await setDoc(doc(db, 'alertRules', ruleId), {
+          id: ruleId,
           ownerId: user.uid,
           locationName: payload.locationName.slice(0, 120),
           lat: payload.lat,
@@ -548,11 +596,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           updatedAt: serverTimestamp(),
         });
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `alertRules/${id}`);
+        handleFirestoreError(err, OperationType.CREATE, `alertRules/${ruleId}`);
       }
     }
-    // Also register with backend worker so live polling evaluates this rule
-    const res = await api.createAlertRule(token, payload);
+    // Also register with backend worker using the same ruleId so live polling evaluates this rule
+    const res = await api.createAlertRule(token, { id: ruleId, ...payload });
     if (user.authProvider === 'local') {
       setAlertRules((prev) => [...prev, res.rule]);
     }
@@ -569,6 +617,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, `alertRules/${id}`);
       }
+      void api.updateAlertRule(token, id, { enabled }).catch(() => {});
       return;
     }
     const res = await api.updateAlertRule(token, id, { enabled });
@@ -583,6 +632,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, `alertRules/${id}`);
       }
+      void api.deleteAlertRule(token, id).catch(() => {});
       return;
     }
     await api.deleteAlertRule(token, id);
@@ -595,39 +645,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   ) => {
     if (!user || !token) return;
     if (user.authProvider === 'firebase') {
+      const alertRef = doc(db, 'alerts', id);
       try {
-        await updateDoc(doc(db, 'alerts', id), { status });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `alerts/${id}`);
+        await updateDoc(alertRef, { status });
+      } catch (updateErr) {
+        const localAlert = alertsRef.current.find((a) => a.id === id);
+        if (localAlert) {
+          try {
+            await setDoc(alertRef, sanitizeAlertForFirestore(localAlert, user.uid, status));
+          } catch (createErr) {
+            handleFirestoreError(createErr, OperationType.UPDATE, `alerts/${id}`);
+          }
+        } else {
+          handleFirestoreError(updateErr, OperationType.UPDATE, `alerts/${id}`);
+        }
       }
+      setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+      void api.updateAlertStatus(token, id, status).catch(() => {});
       return;
     }
     const res = await api.updateAlertStatus(token, id, status);
     setAlerts((prev) => prev.map((a) => (a.id === id ? res.alert : a)));
   };
 
-  const pushRealtimeAlert = useCallback(
-    async (incomingAlert: PollutionAlert) => {
-      setAlerts((prev) => {
-        if (prev.some((a) => a.id === incomingAlert.id || a.dedupeKey === incomingAlert.dedupeKey)) {
-          return prev;
-        }
-        return [incomingAlert, ...prev];
-      });
-      if (user?.authProvider === 'firebase') {
-        try {
-          await setDoc(doc(db, 'alerts', incomingAlert.id), {
-            ...incomingAlert,
-            ownerId: user.uid,
-            triggeredAt: serverTimestamp(),
-          });
-        } catch {
-          // ignore duplicate or offline sync
-        }
+  const pushRealtimeAlert = useCallback(async (incomingAlert: PollutionAlert) => {
+    setAlerts((prev) => {
+      if (prev.some((a) => a.id === incomingAlert.id || a.dedupeKey === incomingAlert.dedupeKey)) {
+        return prev;
       }
-    },
-    [user]
-  );
+      return [incomingAlert, ...prev];
+    });
+    const activeUser = userRef.current;
+    if (activeUser?.authProvider === 'firebase') {
+      try {
+        await setDoc(
+          doc(db, 'alerts', incomingAlert.id),
+          sanitizeAlertForFirestore(incomingAlert, activeUser.uid)
+        );
+      } catch (err) {
+        console.warn('Firestore realtime alert sync deferred:', err);
+      }
+    }
+  }, []);
 
   return (
     <AuthContext.Provider
