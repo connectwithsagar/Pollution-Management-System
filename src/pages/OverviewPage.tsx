@@ -38,6 +38,10 @@ export function OverviewPage({
   loading,
   lastRefreshIso,
   wsConnected,
+  autoSyncEnabled,
+  syncIntervalSec,
+  onToggleAutoSync,
+  onChangeSyncInterval,
   onRefresh,
   onSaveLocation,
   onLocateUser,
@@ -54,6 +58,10 @@ export function OverviewPage({
   loading: boolean;
   lastRefreshIso: string | null;
   wsConnected: boolean;
+  autoSyncEnabled: boolean;
+  syncIntervalSec: number;
+  onToggleAutoSync: () => void;
+  onChangeSyncInterval: (sec: number) => void;
   onRefresh: () => void;
   onSaveLocation: () => void;
   onLocateUser: () => void;
@@ -107,17 +115,35 @@ export function OverviewPage({
             </span>
             <span aria-hidden="true">·</span>
             <span className="font-mono tabular-nums">
-              Refreshed: {formatTimeAgo(lastRefreshIso)}
+              Synced: {formatTimeAgo(lastRefreshIso)}
             </span>
-            {wsConnected && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                  <span>Live Stream Connected</span>
-                </span>
-              </>
-            )}
+            <span aria-hidden="true">·</span>
+            <span
+              className={`inline-flex items-center gap-1.5 ${
+                !autoSyncEnabled
+                  ? 'text-slate-500 dark:text-slate-400'
+                  : wsConnected
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-cyan-600 dark:text-cyan-400'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  !autoSyncEnabled
+                    ? 'bg-slate-400'
+                    : wsConnected
+                      ? 'bg-emerald-500 animate-pulse'
+                      : 'bg-cyan-500'
+                }`}
+              />
+              <span>
+                {!autoSyncEnabled
+                  ? 'Auto-Sync Paused'
+                  : wsConnected
+                    ? `Live WS Sync (${syncIntervalSec}s)`
+                    : `Live HTTP Sync (${syncIntervalSec}s)`}
+              </span>
+            </span>
           </div>
           <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1">
             {location.name}
@@ -128,6 +154,30 @@ export function OverviewPage({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex items-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 overflow-hidden text-xs">
+            <button
+              type="button"
+              onClick={onToggleAutoSync}
+              className={`px-2.5 py-2 font-medium whitespace-nowrap shrink-0 transition-colors ${
+                autoSyncEnabled
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+              }`}
+            >
+              {autoSyncEnabled ? 'Auto-Sync: ON' : 'Auto-Sync: OFF'}
+            </button>
+            <select
+              aria-label="Open-Meteo real-time sync interval"
+              value={syncIntervalSec}
+              onChange={(e) => onChangeSyncInterval(Number(e.target.value))}
+              className="px-2 py-2 bg-transparent border-l border-slate-300 dark:border-slate-700 text-xs font-mono text-slate-700 dark:text-slate-200 focus:outline-none"
+            >
+              <option value={15}>15s</option>
+              <option value={30}>30s</option>
+              <option value={60}>1m</option>
+              <option value={300}>5m</option>
+            </select>
+          </div>
           <button
             type="button"
             onClick={onLocateUser}
@@ -160,7 +210,7 @@ export function OverviewPage({
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 text-white text-xs font-medium whitespace-nowrap shrink-0"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>{loading ? 'Refreshing...' : 'Refresh Telemetry'}</span>
+            <span>{loading ? 'Syncing...' : 'Sync Open-Meteo'}</span>
           </button>
         </div>
       </div>

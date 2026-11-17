@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Cpu, Database, Moon, Radio, Settings, Sun } from 'lucide-react';
+import { Cpu, Database, Moon, Radio, Settings, Sun, Upload } from 'lucide-react';
 import { api } from '../services/api.ts';
 import { useAuth } from '../hooks/useAuth.tsx';
 import type { ActiveLocation, AqiStandard } from '../types/env.ts';
@@ -104,18 +104,41 @@ export function AdminSettingsPage({
 
   const handleIngestSample = async (deviceId: string) => {
     try {
-      await api.ingestIotReading({
-        deviceId,
-        pm2_5: testPm25,
-        pm10: Number((testPm25 * 1.45).toFixed(1)),
-        temperature: 21.4,
-        humidity: 54,
-      });
+      await api.ingestIotReading(
+        {
+          deviceId,
+          pm2_5: testPm25,
+          pm10: Number((testPm25 * 1.45).toFixed(1)),
+          temperature: 21.4,
+          humidity: 54,
+        },
+        token
+      );
       setStatusMessage(`Ingested ESP32 telemetry packet for ${deviceId}.`);
       await loadAdminData();
       onStationsUpdated();
     } catch (err) {
       setStatusMessage(err instanceof Error ? err.message : 'IoT ingestion failed.');
+    }
+  };
+
+  const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const result = await api.ingestV1Csv(text, token);
+      setStatusMessage(
+        `POST /api/v1/ingest imported ${result.ingestedCount} reading(s)${
+          result.errorCount ? ` (${result.errorCount} skipped)` : ''
+        }.`
+      );
+      await loadAdminData();
+      onStationsUpdated();
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : 'CSV upload failed.');
+    } finally {
+      e.target.value = '';
     }
   };
 
@@ -236,9 +259,23 @@ export function AdminSettingsPage({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
             <Radio className="w-4 h-4 text-cyan-500" />
-            <span>ESP32 / IoT Sensor Network & Ingestion API</span>
+            <span>ESP32 / IoT Sensor Network & CSV Ingestion API</span>
           </div>
-          <span className="text-xs font-mono text-slate-500">POST /api/iot/readings</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-mono text-slate-500">
+              POST /api/v1/ingest · POST /api/iot/readings
+            </span>
+            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium cursor-pointer whitespace-nowrap shrink-0">
+              <Upload className="w-3.5 h-3.5 text-cyan-500" />
+              <span>Upload CSV</span>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleCsvUpload}
+                className="sr-only"
+              />
+            </label>
+          </div>
         </div>
 
         {statusMessage && (

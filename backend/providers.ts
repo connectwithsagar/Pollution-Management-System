@@ -9,24 +9,45 @@ import type {
 
 const FETCH_TIMEOUT_MS = 9000;
 
-async function fetchJsonWithTimeout<T>(url: string, headers: Record<string, string> = {}): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers: {
-        Accept: 'application/json',
-        ...headers,
-      },
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} from ${new URL(url).hostname}`);
+async function fetchJsonWithTimeout<T>(
+  url: string,
+  headers: Record<string, string> = {},
+  retries = 1
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          ...headers,
+        },
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const err = new Error(`HTTP ${res.status} from ${new URL(url).hostname}`);
+        if (res.status >= 500 && attempt < retries) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        throw err;
+      }
+      return (await res.json()) as T;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 250));
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return (await res.json()) as T;
-  } finally {
-    clearTimeout(timer);
   }
+  throw lastErr;
 }
 
 export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -265,11 +286,19 @@ export async function fetchOpenAqStations(
   }
 }
 
+function normalizeOpenMeteoIso(raw?: string | null): string | null {
+  if (!raw) return null;
+  if (raw.endsWith('Z')) return raw;
+  if (raw.length === 16) return `${raw}:00Z`;
+  return `${raw}Z`;
+}
+
 export async function fetchOpenMeteoAirAndWeather(
   lat: number,
   lon: number,
   pastDays = 7,
-  forecastDays = 2
+  forecastDays = 2,
+  forceRefresh = false
 ): Promise<{
   current: {
     observedAt: string | null;
@@ -294,9 +323,12 @@ export async function fetchOpenMeteoAirAndWeather(
   const key = `om:${lat.toFixed(3)}:${lon.toFixed(3)}:${pastDays}:${forecastDays}`;
   const errors: string[] = [];
 
-  const { value } = await apiCache.getOrFetch(key, 120_000, async () => {
-    const aqUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&hourly=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
-    const wxUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,surface_pressure&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
+  const { value } = await apiCache.getOrFetch(
+    key,
+    45_000,
+    async () => {
+      const aqUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&hourly=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
+      const wxUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,surface_pressure&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
 
     const [aqRes, wxRes] = await Promise.allSettled([
       fetchJsonWithTimeout<OpenMeteoAirQualityResponse>(aqUrl),
@@ -363,7 +395,7 @@ export async function fetchOpenMeteoAirAndWeather(
 
     return {
       current: {
-        observedAt: aq?.current?.time ? `${aq.current.time}:00Z` : null,
+        observedAt: normalizeOpenMeteoIso(aq?.current?.time),
         usAqi: numOrNull(aq?.current?.us_aqi),
         euAqi: numOrNull(aq?.current?.european_aqi),
         pm2_5: numOrNull(aq?.current?.pm2_5),
@@ -382,53 +414,64 @@ export async function fetchOpenMeteoAirAndWeather(
       hourlyForecast,
       errors,
     };
-  });
+  },
+  forceRefresh
+  );
 
   return value;
 }
 
-export async function fetchModeledMetroGrid(lat: number, lon: number): Promise<StationNode[]> {
+export async function fetchModeledMetroGrid(
+  lat: number,
+  lon: number,
+  forceRefresh = false
+): Promise<StationNode[]> {
   const key = `grid:${lat.toFixed(2)}:${lon.toFixed(2)}`;
   try {
-    const { value } = await apiCache.getOrFetch(key, 240_000, async () => {
-      const offsets = [-0.08, -0.04, 0, 0.04, 0.08];
-      const coords: Array<{ lat: number; lon: number; label: string }> = [];
-      for (const dLat of offsets) {
-        for (const dLon of offsets) {
-          coords.push({
-            lat: Number((lat + dLat).toFixed(4)),
-            lon: Number((lon + dLon).toFixed(4)),
-            label: `Grid (${(lat + dLat).toFixed(2)}, ${(lon + dLon).toFixed(2)})`,
-          });
+    const { value } = await apiCache.getOrFetch(
+      key,
+      120_000,
+      async () => {
+        const offsets = [-0.08, -0.04, 0, 0.04, 0.08];
+        const coords: Array<{ lat: number; lon: number; label: string }> = [];
+        for (const dLat of offsets) {
+          for (const dLon of offsets) {
+            coords.push({
+              lat: Number((lat + dLat).toFixed(4)),
+              lon: Number((lon + dLon).toFixed(4)),
+              label: `Grid (${(lat + dLat).toFixed(2)}, ${(lon + dLon).toFixed(2)})`,
+            });
+          }
         }
-      }
-      const lats = coords.map((c) => c.lat).join(',');
-      const lons = coords.map((c) => c.lon).join(',');
-      const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lats}&longitude=${lons}&current=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&timezone=UTC`;
-      const data = await fetchJsonWithTimeout<OpenMeteoAirQualityResponse[]>(url);
-      if (!Array.isArray(data)) return [];
+        const lats = coords.map((c) => c.lat).join(',');
+        const lons = coords.map((c) => c.lon).join(',');
+        const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lats}&longitude=${lons}&current=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&timezone=UTC`;
+        const data = await fetchJsonWithTimeout<OpenMeteoAirQualityResponse[]>(url);
+        if (!Array.isArray(data)) return [];
 
-      return data.map((item, idx) => ({
-        id: `om-grid-${idx}`,
-        name: coords[idx].label,
-        lat: coords[idx].lat,
-        lon: coords[idx].lon,
-        distanceKm: Number(haversineKm(lat, lon, coords[idx].lat, coords[idx].lon).toFixed(2)),
-        provider: 'Open-Meteo CAMS Grid',
-        sourceType: 'modeled' as const,
-        observedAt: item.current?.time ? `${item.current.time}:00Z` : null,
-        pm2_5: numOrNull(item.current?.pm2_5),
-        pm10: numOrNull(item.current?.pm10),
-        no2: numOrNull(item.current?.nitrogen_dioxide),
-        o3: numOrNull(item.current?.ozone),
-        co: numOrNull(item.current?.carbon_monoxide),
-        so2: numOrNull(item.current?.sulphur_dioxide),
-        us_aqi: numOrNull(item.current?.us_aqi),
-        eu_aqi: numOrNull(item.current?.european_aqi),
-        temperature: null,
-        humidity: null,
-      }));
-    });
+        return data.map((item, idx) => ({
+          id: `om-grid-${idx}`,
+          name: coords[idx].label,
+          lat: coords[idx].lat,
+          lon: coords[idx].lon,
+          distanceKm: Number(haversineKm(lat, lon, coords[idx].lat, coords[idx].lon).toFixed(2)),
+          provider: 'Open-Meteo CAMS Grid',
+          sourceType: 'modeled' as const,
+          observedAt: normalizeOpenMeteoIso(item.current?.time),
+          pm2_5: numOrNull(item.current?.pm2_5),
+          pm10: numOrNull(item.current?.pm10),
+          no2: numOrNull(item.current?.nitrogen_dioxide),
+          o3: numOrNull(item.current?.ozone),
+          co: numOrNull(item.current?.carbon_monoxide),
+          so2: numOrNull(item.current?.sulphur_dioxide),
+          us_aqi: numOrNull(item.current?.us_aqi),
+          eu_aqi: numOrNull(item.current?.european_aqi),
+          temperature: null,
+          humidity: null,
+        }));
+      },
+      forceRefresh
+    );
     return value;
   } catch {
     return [];
@@ -438,10 +481,11 @@ export async function fetchModeledMetroGrid(lat: number, lon: number): Promise<S
 export async function getCurrentAirQuality(
   lat: number,
   lon: number,
-  locationLabel?: string
+  locationLabel?: string,
+  forceRefresh = false
 ): Promise<AirQualityReading> {
   const [omResult, scResult] = await Promise.all([
-    fetchOpenMeteoAirAndWeather(lat, lon, 2, 1),
+    fetchOpenMeteoAirAndWeather(lat, lon, 2, 1, forceRefresh),
     fetchSensorCommunityStations(lat, lon, 12),
   ]);
 
@@ -516,7 +560,8 @@ export async function getCurrentAirQuality(
 export async function getAllStationsForArea(
   lat: number,
   lon: number,
-  radiusKm = 25
+  radiusKm = 25,
+  forceRefresh = false
 ): Promise<{
   observedStations: StationNode[];
   modeledGrid: StationNode[];
@@ -526,7 +571,7 @@ export async function getAllStationsForArea(
   const [scRes, openAqRes, modeledGrid] = await Promise.all([
     fetchSensorCommunityStations(lat, lon, radiusKm),
     fetchOpenAqStations(lat, lon, radiusKm),
-    fetchModeledMetroGrid(lat, lon),
+    fetchModeledMetroGrid(lat, lon, forceRefresh),
   ]);
 
   const errors: string[] = [];

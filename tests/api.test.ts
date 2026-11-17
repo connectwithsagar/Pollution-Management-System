@@ -3,6 +3,7 @@ import http from 'http';
 import path from 'path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../server.ts';
+import { TtlCache } from '../backend/cache.ts';
 import { computeUsAqiFromPm25, haversineKm } from '../backend/providers.ts';
 
 let server: http.Server;
@@ -196,6 +197,85 @@ describe('AetherGrid Backend & Security Tests', () => {
       expect(typeof geoRes.body.lat).toBe('number');
       expect(typeof geoRes.body.lon).toBe('number');
       expect(geoRes.body.source).toBe('ip_geolocation');
+    }
+  });
+
+  it('supports TtlCache forceRefresh bypass and live ?refresh=1 Open-Meteo sync', async () => {
+    const cache = new TtlCache();
+    let count = 0;
+    const first = await cache.getOrFetch('k', 60_000, async () => ++count, false);
+    const second = await cache.getOrFetch('k', 60_000, async () => ++count, false);
+    const forced = await cache.getOrFetch('k', 60_000, async () => ++count, true);
+    expect(first.value).toBe(1);
+    expect(second.value).toBe(1);
+    expect(second.cached).toBe(true);
+    expect(forced.value).toBe(2);
+    expect(forced.cached).toBe(false);
+
+    const liveRes = await req('/api/air-quality/current?lat=28.61&lon=77.21&refresh=1');
+    expect(liveRes.status).toBe(200);
+    expect(liveRes.body.provider).toBe('Open-Meteo CAMS + Forecast');
+    expect(typeof liveRes.body.fetchedAt).toBe('string');
+  });
+
+  it('ingests ESP32 JSON and CSV uploads via POST /api/v1/ingest', async () => {
+    const jsonRes = await req('/api/v1/ingest', {
+      method: 'POST',
+      body: JSON.stringify({
+        deviceId: 'esp32-delhi-ward-01',
+        name: 'Connaught Place ESP32',
+        lat: 28.6139,
+        lon: 77.209,
+        pm2_5: 84.5,
+        pm10: 142.0,
+        temperature: 24.2,
+        humidity: 58,
+      }),
+    });
+    expect(jsonRes.status).toBe(201);
+    expect(jsonRes.body.ingestedCount).toBe(1);
+
+    const csvPayload = [
+      'deviceId,name,lat,lon,pm2_5,pm10,temperature,humidity',
+      'esp32-csv-node-02,India Gate Ward Sensor,28.6129,77.2295,91.2,155.4,23.8,61',
+    ].join('\n');
+    const csvRes = await req('/api/v1/ingest', {
+      method: 'POST',
+      body: JSON.stringify({ csv: csvPayload }),
+    });
+    expect(csvRes.status).toBe(201);
+    expect(csvRes.body.ingestedCount).toBe(1);
+
+    const rawCsvRes = await req('/api/v1/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/csv' },
+      body: csvPayload,
+    });
+    expect(rawCsvRes.status).toBe(201);
+    expect(rawCsvRes.body.ingestedCount).toBe(1);
+
+    // When IOT_INGEST_KEY is configured, reject unauthenticated callers and allow x-iot-key or Bearer auth
+    const prevKey = process.env.IOT_INGEST_KEY;
+    process.env.IOT_INGEST_KEY = 'test-esp32-secret';
+    try {
+      const unauthRes = await req('/api/v1/ingest', {
+        method: 'POST',
+        body: JSON.stringify({ deviceId: 'esp32-delhi-ward-01', pm2_5: 50 }),
+      });
+      expect(unauthRes.status).toBe(401);
+
+      const keyedRes = await req('/api/v1/ingest', {
+        method: 'POST',
+        headers: { 'x-iot-key': 'test-esp32-secret' },
+        body: JSON.stringify({ deviceId: 'esp32-delhi-ward-01', pm2_5: 51 }),
+      });
+      expect(keyedRes.status).toBe(201);
+    } finally {
+      if (prevKey === undefined) {
+        delete process.env.IOT_INGEST_KEY;
+      } else {
+        process.env.IOT_INGEST_KEY = prevKey;
+      }
     }
   });
 });

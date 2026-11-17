@@ -8,6 +8,7 @@ import { createServer as createViteServer } from 'vite';
 import {
   hashPassword,
   requireAuth,
+  resolveAuthToken,
   signJwt,
   verifyPassword,
   type AuthRequest,
@@ -64,7 +65,8 @@ function parseCoord(raw: unknown, min: number, max: number): number | null {
 
 export function createApp() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '2mb' }));
+  app.use(express.text({ type: ['text/csv', 'text/plain'], limit: '2mb' }));
   app.use('/api', rateLimit(240));
 
   // Health
@@ -216,13 +218,14 @@ export function createApp() {
     const lat = parseCoord(req.query.lat ?? settings.defaultLat, -90, 90);
     const lon = parseCoord(req.query.lon ?? settings.defaultLon, -180, 180);
     const label = typeof req.query.label === 'string' ? req.query.label : undefined;
+    const forceRefresh = req.query.refresh === '1' || req.query.force === '1';
     if (lat === null || lon === null) {
       res.status(400).json({ error: 'Invalid latitude or longitude.' });
       return;
     }
 
     try {
-      const reading = await getCurrentAirQuality(lat, lon, label);
+      const reading = await getCurrentAirQuality(lat, lon, label, forceRefresh);
       const triggered = await evaluateAlertRulesForCoordinates(lat, lon, reading);
       for (const alert of triggered) {
         broadcastEvent('alert:triggered', alert, alert.ownerId);
@@ -242,13 +245,14 @@ export function createApp() {
     const lat = parseCoord(req.query.lat ?? settings.defaultLat, -90, 90);
     const lon = parseCoord(req.query.lon ?? settings.defaultLon, -180, 180);
     const days = Math.min(14, Math.max(1, Number(req.query.days || 7)));
+    const forceRefresh = req.query.refresh === '1' || req.query.force === '1';
     if (lat === null || lon === null) {
       res.status(400).json({ error: 'Invalid latitude or longitude.' });
       return;
     }
 
     try {
-      const data = await fetchOpenMeteoAirAndWeather(lat, lon, days, 2);
+      const data = await fetchOpenMeteoAirAndWeather(lat, lon, days, 2, forceRefresh);
       res.json({
         lat,
         lon,
@@ -272,12 +276,13 @@ export function createApp() {
     const settings = dbStore.getAdminSettings();
     const lat = parseCoord(req.query.lat ?? settings.defaultLat, -90, 90);
     const lon = parseCoord(req.query.lon ?? settings.defaultLon, -180, 180);
+    const forceRefresh = req.query.refresh === '1' || req.query.force === '1';
     if (lat === null || lon === null) {
       res.status(400).json({ error: 'Invalid latitude or longitude.' });
       return;
     }
     try {
-      const data = await fetchOpenMeteoAirAndWeather(lat, lon, 2, 2);
+      const data = await fetchOpenMeteoAirAndWeather(lat, lon, 2, 2, forceRefresh);
       res.json({
         lat,
         lon,
@@ -303,12 +308,13 @@ export function createApp() {
     const lat = parseCoord(req.query.lat ?? settings.defaultLat, -90, 90);
     const lon = parseCoord(req.query.lon ?? settings.defaultLon, -180, 180);
     const radiusKm = Math.min(50, Math.max(5, Number(req.query.radiusKm || 25)));
+    const forceRefresh = req.query.refresh === '1' || req.query.force === '1';
     if (lat === null || lon === null) {
       res.status(400).json({ error: 'Invalid latitude or longitude.' });
       return;
     }
     try {
-      const result = await getAllStationsForArea(lat, lon, radiusKm);
+      const result = await getAllStationsForArea(lat, lon, radiusKm, forceRefresh);
       res.json({
         lat,
         lon,
@@ -685,10 +691,21 @@ export function createApp() {
     res.status(201).json({ device });
   });
 
-  app.post('/api/iot/readings', (req, res) => {
+  const hasIngestPermission = async (req: express.Request): Promise<boolean> => {
     const expectedKey = process.env.IOT_INGEST_KEY;
-    if (expectedKey && req.headers['x-iot-key'] !== expectedKey) {
-      res.status(401).json({ error: 'Invalid IoT ingestion key.' });
+    if (!expectedKey) return true;
+    if (req.headers['x-iot-key'] === expectedKey) return true;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const user = await resolveAuthToken(authHeader.slice('Bearer '.length).trim());
+      if (user) return true;
+    }
+    return false;
+  };
+
+  app.post('/api/iot/readings', async (req, res) => {
+    if (!(await hasIngestPermission(req))) {
+      res.status(401).json({ error: 'Invalid IoT ingestion key or authentication required.' });
       return;
     }
     const deviceId = String(req.body?.deviceId || '').trim();
@@ -729,6 +746,151 @@ export function createApp() {
 
     broadcastEvent('iot:reading', { device, reading });
     res.status(201).json({ reading });
+  });
+
+  // Unified v1 Ingestion Endpoint (ESP32 JSON packets, JSON arrays, and CSV uploads)
+  app.post('/api/v1/ingest', async (req, res) => {
+    if (!(await hasIngestPermission(req))) {
+      res.status(401).json({ error: 'Invalid IoT ingestion key or authentication required.' });
+      return;
+    }
+
+    const parseCsvRows = (csvText: string): Array<Record<string, unknown>> => {
+      const lines = csvText
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
+      const out: Array<Record<string, unknown>> = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+        const row: Record<string, unknown> = {};
+        headers.forEach((h, idx) => {
+          row[h] = cols[idx] ?? '';
+        });
+        out.push(row);
+      }
+      return out;
+    };
+
+    let records: Array<Record<string, unknown>> = [];
+    if (typeof req.body === 'string') {
+      records = parseCsvRows(req.body);
+    } else if (Array.isArray(req.body)) {
+      records = req.body as Array<Record<string, unknown>>;
+    } else if (req.body && typeof req.body === 'object') {
+      if (typeof req.body.csv === 'string') {
+        records = parseCsvRows(req.body.csv);
+      } else if (Array.isArray(req.body.readings)) {
+        records = req.body.readings as Array<Record<string, unknown>>;
+      } else {
+        records = [req.body as Record<string, unknown>];
+      }
+    }
+
+    if (records.length === 0) {
+      res.status(400).json({
+        error: 'Provide a JSON sensor reading, { readings: [...] }, { csv: "..." }, or text/csv body.',
+      });
+      return;
+    }
+
+    const ingested: unknown[] = [];
+    const errors: Array<{ index: number; error: string }> = [];
+
+    records.forEach((row, index) => {
+      const rawDeviceId = String(row.deviceId ?? row.device_id ?? '').trim();
+      const deviceId = rawDeviceId.replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!deviceId) {
+        errors.push({ index, error: 'Missing deviceId' });
+        return;
+      }
+
+      let device = dbStore.getIotDevices().find((d) => d.deviceId === deviceId);
+      if (!device) {
+        const lat = parseCoord(row.lat ?? row.latitude, -90, 90);
+        const lon = parseCoord(row.lon ?? row.longitude, -180, 180);
+        if (lat === null || lon === null) {
+          errors.push({
+            index,
+            error: `Unknown deviceId "${deviceId}". Register it first or include valid lat & lon columns.`,
+          });
+          return;
+        }
+        device = dbStore.registerIotDevice({
+          deviceId,
+          ownerId: 'ingest-v1',
+          name: String(row.name || `ESP32 Node ${deviceId}`).slice(0, 120),
+          lat,
+          lon,
+          hardwareModel: String(row.hardwareModel || 'ESP32 / CSV Ingest').slice(0, 120),
+          calibrationOffsetPm25: Number.isFinite(Number(row.calibrationOffsetPm25))
+            ? Number(row.calibrationOffsetPm25)
+            : 0,
+          status: 'active',
+          lastReadingAt: '',
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      const toNum = (val: unknown): number | null => {
+        if (val === undefined || val === null || val === '') return null;
+        const n = Number(val);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const rawPm25 = toNum(row.pm2_5 ?? row.pm25);
+      const rawPm10 = toNum(row.pm10);
+      const temp = toNum(row.temperature ?? row.temp);
+      const hum = toNum(row.humidity ?? row.rh);
+
+      const calibratedPm25 =
+        rawPm25 !== null
+          ? Math.max(0, Number((rawPm25 + device.calibrationOffsetPm25).toFixed(2)))
+          : null;
+
+      const qualityFlag =
+        calibratedPm25 !== null && calibratedPm25 > 1000
+          ? 'suspect'
+          : device.calibrationOffsetPm25 !== 0
+            ? 'calibrated'
+            : 'valid';
+
+      const rawTs = typeof row.recordedAt === 'string' && row.recordedAt.trim()
+        ? Date.parse(row.recordedAt)
+        : NaN;
+      const recordedAt = Number.isFinite(rawTs)
+        ? new Date(rawTs).toISOString()
+        : new Date().toISOString();
+
+      const reading = dbStore.addIotReading({
+        id: `iot-${crypto.randomUUID().slice(0, 12)}`,
+        deviceId: device.deviceId,
+        pm2_5: calibratedPm25,
+        pm10: rawPm10 !== null ? Number(rawPm10.toFixed(2)) : null,
+        temperature: temp !== null ? Number(temp.toFixed(1)) : null,
+        humidity: hum !== null ? Number(hum.toFixed(1)) : null,
+        qualityFlag,
+        calibrationOffsetApplied: device.calibrationOffsetPm25,
+        recordedAt,
+      });
+
+      broadcastEvent('iot:reading', { device, reading });
+      ingested.push(reading);
+    });
+
+    if (ingested.length === 0) {
+      res.status(400).json({ error: 'No valid records ingested.', errors });
+      return;
+    }
+
+    res.status(201).json({
+      ingestedCount: ingested.length,
+      errorCount: errors.length,
+      readings: ingested,
+      errors,
+    });
   });
 
   // Admin & Settings

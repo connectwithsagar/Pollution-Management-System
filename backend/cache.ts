@@ -34,15 +34,16 @@ export class TtlCache {
   async getOrFetch<T>(
     key: string,
     ttlMs: number,
-    fetcher: () => Promise<T>
+    fetcher: () => Promise<T>,
+    forceRefresh = false
   ): Promise<{ value: T; cached: boolean }> {
     const existing = this.get<T>(key);
-    if (existing && !existing.isStale) {
+    if (!forceRefresh && existing && !existing.isStale) {
       return { value: existing.value, cached: true };
     }
 
     const pending = this.inflight.get(key) as Promise<T> | undefined;
-    if (pending) {
+    if (!forceRefresh && pending) {
       const value = await pending;
       return { value, cached: true };
     }

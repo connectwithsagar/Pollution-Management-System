@@ -55,12 +55,12 @@ export const api = {
       source: 'ip_geolocation';
     }>('/api/locations/geolocate'),
 
-  getCurrentAirQuality: (lat: number, lon: number, label?: string) =>
+  getCurrentAirQuality: (lat: number, lon: number, label?: string, forceRefresh = false) =>
     requestJson<AirQualityReading>(
-      `/api/air-quality/current?lat=${lat}&lon=${lon}${label ? `&label=${encodeURIComponent(label)}` : ''}`
+      `/api/air-quality/current?lat=${lat}&lon=${lon}${label ? `&label=${encodeURIComponent(label)}` : ''}${forceRefresh ? '&refresh=1' : ''}`
     ),
 
-  getHistory: (lat: number, lon: number, days = 7) =>
+  getHistory: (lat: number, lon: number, days = 7, forceRefresh = false) =>
     requestJson<{
       lat: number;
       lon: number;
@@ -70,9 +70,9 @@ export const api = {
       hourlyPast: HourlyPoint[];
       hourlyForecast: HourlyPoint[];
       errors: string[];
-    }>(`/api/air-quality/history?lat=${lat}&lon=${lon}&days=${days}`),
+    }>(`/api/air-quality/history?lat=${lat}&lon=${lon}&days=${days}${forceRefresh ? '&refresh=1' : ''}`),
 
-  getStations: (lat: number, lon: number, radiusKm = 25) =>
+  getStations: (lat: number, lon: number, radiusKm = 25, forceRefresh = false) =>
     requestJson<{
       lat: number;
       lon: number;
@@ -81,7 +81,7 @@ export const api = {
       modeledGrid: StationNode[];
       iotStations: StationNode[];
       errors: string[];
-    }>(`/api/stations?lat=${lat}&lon=${lon}&radiusKm=${radiusKm}`),
+    }>(`/api/stations?lat=${lat}&lon=${lon}&radiusKm=${radiusKm}${forceRefresh ? '&refresh=1' : ''}`),
 
   getPredictions: (
     lat: number,
@@ -305,17 +305,39 @@ export const api = {
       token
     ),
 
-  ingestIotReading: (payload: {
-    deviceId: string;
-    pm2_5: number;
-    pm10?: number;
-    temperature?: number;
-    humidity?: number;
-  }) =>
-    requestJson<{ reading: unknown }>('/api/iot/readings', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+  ingestIotReading: (
+    payload: {
+      deviceId: string;
+      pm2_5: number;
+      pm10?: number;
+      temperature?: number;
+      humidity?: number;
+    },
+    token?: string | null
+  ) =>
+    requestJson<{ reading: unknown }>(
+      '/api/iot/readings',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token || undefined
+    ),
+
+  ingestV1Csv: (csv: string, token?: string | null) =>
+    requestJson<{
+      ingestedCount: number;
+      errorCount: number;
+      readings: unknown[];
+      errors: Array<{ index: number; error: string }>;
+    }>(
+      '/api/v1/ingest',
+      {
+        method: 'POST',
+        body: JSON.stringify({ csv }),
+      },
+      token || undefined
+    ),
 
   getAdminSettings: () =>
     requestJson<{
@@ -362,10 +384,16 @@ export const api = {
 export function createTelemetrySocket(
   activeLocation: ActiveLocation,
   uid: string | undefined,
+  intervalSec: number,
   onAirQualityUpdate: (reading: AirQualityReading) => void,
   onAlertTriggered: (alert: PollutionAlert) => void,
   onStatusChange: (connected: boolean) => void
-): { close: () => void; subscribe: (loc: ActiveLocation, uid?: string) => void } {
+): {
+  close: () => void;
+  subscribe: (loc: ActiveLocation, uid?: string, nextIntervalSec?: number) => void;
+  syncNow: () => void;
+  setIntervalSec: (sec: number) => void;
+} {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${proto}//${window.location.host}/ws/air-quality`;
 
@@ -373,7 +401,16 @@ export function createTelemetrySocket(
   let closed = false;
   let currentLoc = activeLocation;
   let currentUid = uid;
+  let currentIntervalSec = intervalSec;
   let reconnectTimer: number | null = null;
+  let heartbeatTimer: number | null = null;
+
+  const stopHeartbeat = () => {
+    if (heartbeatTimer !== null) {
+      window.clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  };
 
   const connect = () => {
     if (closed) return;
@@ -388,8 +425,15 @@ export function createTelemetrySocket(
           lon: currentLoc.lon,
           label: currentLoc.name,
           uid: currentUid,
+          intervalSec: currentIntervalSec,
         })
       );
+      stopHeartbeat();
+      heartbeatTimer = window.setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 25_000);
     };
 
     ws.onmessage = (ev) => {
@@ -406,6 +450,7 @@ export function createTelemetrySocket(
     };
 
     ws.onclose = () => {
+      stopHeartbeat();
       onStatusChange(false);
       if (!closed) {
         reconnectTimer = window.setTimeout(connect, 5000);
@@ -420,9 +465,10 @@ export function createTelemetrySocket(
   connect();
 
   return {
-    subscribe: (loc: ActiveLocation, nextUid?: string) => {
+    subscribe: (loc: ActiveLocation, nextUid?: string, nextIntervalSec?: number) => {
       currentLoc = loc;
       currentUid = nextUid;
+      if (typeof nextIntervalSec === 'number') currentIntervalSec = nextIntervalSec;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({
@@ -431,12 +477,25 @@ export function createTelemetrySocket(
             lon: loc.lon,
             label: loc.name,
             uid: nextUid,
+            intervalSec: currentIntervalSec,
           })
         );
       }
     },
+    syncNow: () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'sync_now' }));
+      }
+    },
+    setIntervalSec: (sec: number) => {
+      currentIntervalSec = sec;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'set_interval', intervalSec: sec }));
+      }
+    },
     close: () => {
       closed = true;
+      stopHeartbeat();
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       ws?.close();
     },

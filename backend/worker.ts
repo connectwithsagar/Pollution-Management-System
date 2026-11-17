@@ -10,10 +10,13 @@ interface ClientMeta {
   lon: number;
   label: string;
   uid?: string;
+  syncIntervalSec: number;
+  lastSyncedAt: number;
 }
 
 const clients = new Map<WebSocket, ClientMeta>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let syncRunning = false;
 
 function extractMetricValue(reading: AirQualityReading, metric: AlertMetric): number | null {
   const p = reading.pollutants;
@@ -114,72 +117,108 @@ export function broadcastEvent(event: string, payload: unknown, targetUid?: stri
   }
 }
 
-export async function runLiveRefreshCycle(): Promise<void> {
-  const settings = dbStore.getAdminSettings();
-  const targets = new Map<string, { lat: number; lon: number; label: string }>();
-
-  targets.set(`${settings.defaultLat.toFixed(2)},${settings.defaultLon.toFixed(2)}`, {
-    lat: settings.defaultLat,
-    lon: settings.defaultLon,
-    label: settings.defaultCityName,
+async function syncTargetAndPush(
+  target: { lat: number; lon: number; label: string },
+  dueClients: ClientMeta[],
+  forceRefresh: boolean
+): Promise<void> {
+  const reading = await getCurrentAirQuality(target.lat, target.lon, target.label, forceRefresh);
+  const triggeredAlerts = await evaluateAlertRulesForCoordinates(
+    target.lat,
+    target.lon,
+    reading
+  );
+  const now = Date.now();
+  const payload = JSON.stringify({
+    event: 'air_quality:update',
+    payload: reading,
+    timestamp: new Date(now).toISOString(),
   });
 
-  for (const meta of clients.values()) {
-    const key = `${meta.lat.toFixed(2)},${meta.lon.toFixed(2)}`;
-    if (!targets.has(key)) {
-      targets.set(key, { lat: meta.lat, lon: meta.lon, label: meta.label });
-    }
+  for (const meta of dueClients) {
+    if (meta.ws.readyState !== meta.ws.OPEN) continue;
+    meta.lastSyncedAt = now;
+    meta.ws.send(payload);
   }
 
-  for (const target of targets.values()) {
-    try {
-      const reading = await getCurrentAirQuality(target.lat, target.lon, target.label);
-      const triggeredAlerts = await evaluateAlertRulesForCoordinates(
-        target.lat,
-        target.lon,
-        reading
-      );
+  for (const alert of triggeredAlerts) {
+    broadcastEvent('alert:triggered', alert, alert.ownerId);
+  }
+}
 
-      for (const [ws, meta] of clients.entries()) {
-        if (ws.readyState !== ws.OPEN) continue;
-        if (
-          Math.abs(meta.lat - target.lat) <= 0.1 &&
-          Math.abs(meta.lon - target.lon) <= 0.1
-        ) {
-          ws.send(
-            JSON.stringify({
-              event: 'air_quality:update',
-              payload: reading,
-              timestamp: new Date().toISOString(),
-            })
-          );
-        }
-      }
+export async function runLiveRefreshCycle(forceRefresh = true): Promise<void> {
+  if (syncRunning) return;
+  syncRunning = true;
+  try {
+    const settings = dbStore.getAdminSettings();
+    const now = Date.now();
+    const targets = new Map<
+      string,
+      { lat: number; lon: number; label: string; dueClients: ClientMeta[] }
+    >();
 
-      for (const alert of triggeredAlerts) {
-        broadcastEvent('alert:triggered', alert, alert.ownerId);
+    for (const meta of clients.values()) {
+      if (meta.ws.readyState !== meta.ws.OPEN) continue;
+      if (now - meta.lastSyncedAt < meta.syncIntervalSec * 1000) continue;
+
+      const key = `${meta.lat.toFixed(2)},${meta.lon.toFixed(2)}`;
+      const existing = targets.get(key);
+      if (existing) {
+        existing.dueClients.push(meta);
+      } else {
+        targets.set(key, {
+          lat: meta.lat,
+          lon: meta.lon,
+          label: meta.label,
+          dueClients: [meta],
+        });
       }
-    } catch (err) {
-      console.error('Background refresh error:', err);
     }
+
+    // Ensure background alert evaluation continues for default city when no clients are subscribed to it
+    const defKey = `${settings.defaultLat.toFixed(2)},${settings.defaultLon.toFixed(2)}`;
+    if (!targets.has(defKey) && clients.size === 0) {
+      targets.set(defKey, {
+        lat: settings.defaultLat,
+        lon: settings.defaultLon,
+        label: settings.defaultCityName,
+        dueClients: [],
+      });
+    }
+
+    for (const target of targets.values()) {
+      try {
+        await syncTargetAndPush(target, target.dueClients, forceRefresh);
+      } catch (err) {
+        console.error('Background refresh error:', err);
+      }
+    }
+  } finally {
+    syncRunning = false;
   }
 }
 
 export function attachWebSocketServer(wss: WebSocketServer): void {
   wss.on('connection', (ws) => {
     const settings = dbStore.getAdminSettings();
+    const initialInterval = Math.min(
+      3600,
+      Math.max(15, settings.defaultRefreshIntervalSec || 60)
+    );
     clients.set(ws, {
       ws,
       lat: settings.defaultLat,
       lon: settings.defaultLon,
       label: settings.defaultCityName,
+      syncIntervalSec: initialInterval,
+      lastSyncedAt: 0,
     });
 
     ws.send(
       JSON.stringify({
         event: 'connection:ready',
         payload: {
-          refreshIntervalSec: settings.defaultRefreshIntervalSec,
+          refreshIntervalSec: initialInterval,
         },
         timestamp: new Date().toISOString(),
       })
@@ -193,6 +232,8 @@ export function attachWebSocketServer(wss: WebSocketServer): void {
           lon?: number;
           label?: string;
           uid?: string;
+          intervalSec?: number;
+          force?: boolean;
         };
         const meta = clients.get(ws);
         if (!meta) return;
@@ -202,15 +243,32 @@ export function attachWebSocketServer(wss: WebSocketServer): void {
           if (typeof msg.lon === 'number' && Number.isFinite(msg.lon)) meta.lon = msg.lon;
           if (typeof msg.label === 'string' && msg.label.trim()) meta.label = msg.label.trim();
           if (typeof msg.uid === 'string') meta.uid = msg.uid;
+          if (typeof msg.intervalSec === 'number' && Number.isFinite(msg.intervalSec)) {
+            meta.syncIntervalSec = Math.min(3600, Math.max(15, Math.round(msg.intervalSec)));
+          }
 
-          const reading = await getCurrentAirQuality(meta.lat, meta.lon, meta.label);
-          ws.send(
-            JSON.stringify({
-              event: 'air_quality:update',
-              payload: reading,
-              timestamp: new Date().toISOString(),
-            })
+          await syncTargetAndPush(
+            { lat: meta.lat, lon: meta.lon, label: meta.label },
+            [meta],
+            msg.force === true
           );
+        } else if (msg.type === 'sync_now') {
+          await syncTargetAndPush(
+            { lat: meta.lat, lon: meta.lon, label: meta.label },
+            [meta],
+            true
+          );
+        } else if (msg.type === 'set_interval') {
+          if (typeof msg.intervalSec === 'number' && Number.isFinite(msg.intervalSec)) {
+            meta.syncIntervalSec = Math.min(3600, Math.max(15, Math.round(msg.intervalSec)));
+            ws.send(
+              JSON.stringify({
+                event: 'sync:config',
+                payload: { syncIntervalSec: meta.syncIntervalSec },
+                timestamp: new Date().toISOString(),
+              })
+            );
+          }
         } else if (msg.type === 'ping') {
           ws.send(JSON.stringify({ event: 'pong', timestamp: new Date().toISOString() }));
         }
@@ -232,9 +290,8 @@ export function scheduleWorkerPolling(): void {
     clearInterval(pollTimer);
     pollTimer = null;
   }
-  const settings = dbStore.getAdminSettings();
-  const intervalMs = Math.max(60_000, settings.defaultRefreshIntervalSec * 1000);
+  // Check due client syncs every 5 seconds so fast 15s/30s/60s sync intervals trigger accurately
   pollTimer = setInterval(() => {
-    void runLiveRefreshCycle();
-  }, intervalMs);
+    void runLiveRefreshCycle(true);
+  }, 5_000);
 }

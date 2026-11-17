@@ -119,7 +119,8 @@ function DashboardShell() {
   const [authModalOpen, setAuthModalOpen] = useState(false);
 
   const [activeLocation, setActiveLocation] = useState<ActiveLocation>(DEFAULT_LOCATION);
-  const [refreshIntervalSec, setRefreshIntervalSec] = useState(300);
+  const [refreshIntervalSec, setRefreshIntervalSec] = useState(60);
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
 
   // Global search bar state
   const [searchQuery, setSearchQuery] = useState('');
@@ -175,13 +176,13 @@ function DashboardShell() {
   }, []);
 
   const loadAllLocationData = useCallback(
-    async (loc: ActiveLocation, daysCount: number) => {
+    async (loc: ActiveLocation, daysCount: number, forceRefresh = false) => {
       setLoadingTelemetry(true);
       try {
         const [cur, hist, st] = await Promise.all([
-          api.getCurrentAirQuality(loc.lat, loc.lon, loc.name),
-          api.getHistory(loc.lat, loc.lon, daysCount),
-          api.getStations(loc.lat, loc.lon, 25),
+          api.getCurrentAirQuality(loc.lat, loc.lon, loc.name, forceRefresh),
+          api.getHistory(loc.lat, loc.lon, daysCount, forceRefresh),
+          api.getStations(loc.lat, loc.lon, 25, forceRefresh),
         ]);
         setCurrentReading(cur);
         setHourlyHistory(hist.hourlyPast);
@@ -260,6 +261,7 @@ function DashboardShell() {
     const client = createTelemetrySocket(
       activeLocation,
       user?.uid,
+      refreshIntervalSec,
       (reading) => {
         setCurrentReading(reading);
         setLastRefreshIso(new Date().toISOString());
@@ -281,16 +283,22 @@ function DashboardShell() {
   }, []);
 
   useEffect(() => {
-    socketRef.current?.subscribe(activeLocation, user?.uid);
-  }, [activeLocation, user?.uid]);
+    socketRef.current?.subscribe(activeLocation, user?.uid, refreshIntervalSec);
+  }, [activeLocation, user?.uid, refreshIntervalSec]);
 
-  // Configurable client-side auto refresh interval
   useEffect(() => {
+    socketRef.current?.setIntervalSec(autoSyncEnabled ? refreshIntervalSec : 3600);
+  }, [autoSyncEnabled, refreshIntervalSec]);
+
+  // Client-side auto-sync (keeps history/stations/grid synced and acts as HTTP fallback when WS is disconnected)
+  useEffect(() => {
+    if (!autoSyncEnabled) return;
+    const intervalMs = Math.max(15, refreshIntervalSec) * 1000;
     const timer = window.setInterval(() => {
-      void loadAllLocationData(activeLocation, historyDays);
-    }, Math.max(60, refreshIntervalSec) * 1000);
+      void loadAllLocationData(activeLocation, historyDays, true);
+    }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [activeLocation, historyDays, refreshIntervalSec, loadAllLocationData]);
+  }, [autoSyncEnabled, activeLocation, historyDays, refreshIntervalSec, loadAllLocationData]);
 
   // Autocomplete search debounce
   useEffect(() => {
@@ -659,7 +667,14 @@ function DashboardShell() {
               loading={loadingTelemetry}
               lastRefreshIso={lastRefreshIso}
               wsConnected={wsConnected}
-              onRefresh={() => void loadAllLocationData(activeLocation, historyDays)}
+              autoSyncEnabled={autoSyncEnabled}
+              syncIntervalSec={refreshIntervalSec}
+              onToggleAutoSync={() => setAutoSyncEnabled((v) => !v)}
+              onChangeSyncInterval={setRefreshIntervalSec}
+              onRefresh={() => {
+                socketRef.current?.syncNow();
+                void loadAllLocationData(activeLocation, historyDays, true);
+              }}
               onSaveLocation={() => void handleSaveCurrentLocation()}
               onLocateUser={handleLocateUser}
               locatingUser={locatingUser}
