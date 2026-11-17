@@ -3,7 +3,7 @@
   "algorithm": "Bagged Random Forest Regressor",
   "target": "pm2_5",
   "locationKey": "vitest_sf",
-  "trainedAt": "2026-11-17T05:54:41Z",
+  "trainedAt": "2026-11-17T06:15:24Z",
   "splits": {
     "trainSamples": 50,
     "validationSamples": 11,

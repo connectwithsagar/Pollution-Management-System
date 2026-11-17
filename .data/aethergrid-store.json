@@ -246,6 +246,32 @@
       "theme": "dark",
       "createdAt": "2026-11-17T05:54:39.541Z",
       "updatedAt": "2026-11-17T05:54:39.541Z"
+    },
+    {
+      "uid": "loc-f20442fe-4484-4b",
+      "email": "alice_1794896121628@example.com",
+      "displayName": "Alice",
+      "passwordHash": "ce2197471d5e9cad905fd179fd7ecf85:c5680627eebebb0d0be15bd551bfab41324c718c9871f4655a4ddc0732a2adef7d7156ea511436942f35ee411759c8048199574a17acb69e4ba8b6efeb0393fa",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-17T06:15:21.644Z",
+      "updatedAt": "2026-11-17T06:15:21.644Z"
+    },
+    {
+      "uid": "loc-dc910036-bd6f-44",
+      "email": "bob_1794896121628@example.com",
+      "displayName": "Bob",
+      "passwordHash": "01c519186fb2d690924fa014d9c32a95:8ee6458142a9a3986528088941068750e0106c57c86ed69db0f097b66d498302288aa7e702238e0aa762c986eb5695e34d2ee806b0ff3e37c5608f5a96323f14",
+      "role": "user",
+      "preferredStandard": "US_AQI",
+      "refreshIntervalSec": 300,
+      "emailAlertsEnabled": false,
+      "theme": "dark",
+      "createdAt": "2026-11-17T06:15:21.726Z",
+      "updatedAt": "2026-11-17T06:15:21.726Z"
     }
   ],
   "markers": [],
@@ -262,7 +288,7 @@
       "hardwareModel": "ESP32-S3 + Sensirion SPS30 + BME280",
       "calibrationOffsetPm25": -0.4,
       "status": "active",
-      "lastReadingAt": "2026-11-17T05:54:39.721Z",
+      "lastReadingAt": "2026-11-17T06:15:21.898Z",
       "createdAt": "2026-11-16T07:30:00.694Z"
     },
     {
@@ -274,7 +300,7 @@
       "hardwareModel": "ESP32 / CSV Ingest",
       "calibrationOffsetPm25": 0,
       "status": "active",
-      "lastReadingAt": "2026-11-17T05:54:41.650Z",
+      "lastReadingAt": "2026-11-17T06:15:23.892Z",
       "createdAt": "2026-11-17T05:25:55.385Z"
     },
     {
@@ -286,7 +312,7 @@
       "hardwareModel": "ESP32 / CSV Ingest",
       "calibrationOffsetPm25": 0,
       "status": "active",
-      "lastReadingAt": "2026-11-17T05:54:41.642Z",
+      "lastReadingAt": "2026-11-17T06:15:23.884Z",
       "createdAt": "2026-11-17T05:25:55.390Z"
     },
     {
@@ -303,6 +329,61 @@
     }
   ],
   "iotReadings": [
+    {
+      "id": "iot-e67060c0-049",
+      "deviceId": "esp32-delhi-ward-01",
+      "pm2_5": 51,
+      "pm10": null,
+      "temperature": null,
+      "humidity": null,
+      "qualityFlag": "valid",
+      "calibrationOffsetApplied": 0,
+      "recordedAt": "2026-11-17T06:15:23.892Z"
+    },
+    {
+      "id": "iot-782e5b62-959",
+      "deviceId": "esp32-csv-node-02",
+      "pm2_5": 91.2,
+      "pm10": 155.4,
+      "temperature": 23.8,
+      "humidity": 61,
+      "qualityFlag": "valid",
+      "calibrationOffsetApplied": 0,
+      "recordedAt": "2026-11-17T06:15:23.884Z"
+    },
+    {
+      "id": "iot-f4674947-d1d",
+      "deviceId": "esp32-csv-node-02",
+      "pm2_5": 91.2,
+      "pm10": 155.4,
+      "temperature": 23.8,
+      "humidity": 61,
+      "qualityFlag": "valid",
+      "calibrationOffsetApplied": 0,
+      "recordedAt": "2026-11-17T06:15:23.878Z"
+    },
+    {
+      "id": "iot-5749c910-9d7",
+      "deviceId": "esp32-delhi-ward-01",
+      "pm2_5": 84.5,
+      "pm10": 142,
+      "temperature": 24.2,
+      "humidity": 58,
+      "qualityFlag": "valid",
+      "calibrationOffsetApplied": 0,
+      "recordedAt": "2026-11-17T06:15:23.871Z"
+    },
+    {
+      "id": "iot-f7c3f2d9-e81",
+      "deviceId": "esp32-node-alpha-01",
+      "pm2_5": 21.6,
+      "pm10": 35,
+      "temperature": 20.5,
+      "humidity": 55,
+      "qualityFlag": "calibrated",
+      "calibrationOffsetApplied": -0.4,
+      "recordedAt": "2026-11-17T06:15:21.898Z"
+    },
     {
       "id": "iot-b836e9b2-671",
       "deviceId": "esp32-delhi-ward-01",

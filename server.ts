@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -972,6 +973,20 @@ export function createApp() {
     const updated = dbStore.updateAdminSettings(patch);
     scheduleWorkerPolling();
     res.json({ settings: updated });
+  });
+
+  // Downloadable Project Presentation (.pptx)
+  app.get('/api/presentation/download', (_req, res) => {
+    const pptPath = path.resolve(process.cwd(), 'AI Project_MyName.pptx');
+    if (!fs.existsSync(pptPath)) {
+      res.status(404).json({ error: 'Presentation file not found.' });
+      return;
+    }
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    );
+    res.download(pptPath, 'AI Project_MyName.pptx');
   });
 
   return app;
