@@ -409,6 +409,18 @@ export function PollutionMap({
     seq: number;
   } | null>(null);
 
+  // Surface Maps JS runtime auth/referrer/billing failures inside the map overlay
+  useEffect(() => {
+    const handleMapError = (ev: Event) => {
+      const detail = (ev as CustomEvent<string>).detail;
+      if (typeof detail === 'string' && detail.trim()) {
+        setMapError(detail);
+      }
+    };
+    window.addEventListener('gmp-map-error', handleMapError);
+    return () => window.removeEventListener('gmp-map-error', handleMapError);
+  }, []);
+
   // Resolve Google Maps API key from Vite env or backend runtime config
   useEffect(() => {
     const envKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim();
@@ -421,20 +433,34 @@ export function PollutionMap({
     let cancelled = false;
     setLoadingConfig(true);
     fetch('/api/maps/config')
-      .then((res) => (res.ok ? res.json() : { apiKey: '' }))
-      .then((data: { apiKey?: string }) => {
+      .then(async (res) => {
+        const contentType = res.headers.get('content-type') || '';
+        if (!res.ok || !contentType.includes('application/json')) {
+          throw new Error(
+            'Maps configuration endpoint (/api/maps/config) is unreachable. If deploying as a static site, set VITE_GOOGLE_MAPS_API_KEY at build time or deploy the Node server.'
+          );
+        }
+        return (await res.json()) as { apiKey?: string };
+      })
+      .then((data) => {
         if (cancelled) return;
         const key = typeof data?.apiKey === 'string' ? data.apiKey.trim() : '';
         setMapsApiKey(key);
         if (!key) {
-          setMapError('Google Maps API key is not configured for this environment.');
+          setMapError(
+            'Google Maps API key is missing. Set VITE_GOOGLE_MAPS_API_KEY (or GOOGLE_MAPS_API_KEY) in your hosting environment variables.'
+          );
         } else {
           setMapError(null);
         }
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
-          setMapError('Unable to load Google Maps configuration.');
+          setMapError(
+            err instanceof Error
+              ? err.message
+              : 'Unable to load Google Maps configuration.'
+          );
         }
       })
       .finally(() => {
