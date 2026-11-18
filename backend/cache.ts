@@ -4,9 +4,15 @@ interface CacheEntry<T> {
   staleUntil: number;
 }
 
+interface InflightEntry<T> {
+  promise: Promise<T>;
+  startedAt: number;
+  wasForced: boolean;
+}
+
 export class TtlCache {
   private store = new Map<string, CacheEntry<unknown>>();
-  private inflight = new Map<string, Promise<unknown>>();
+  private inflight = new Map<string, InflightEntry<unknown>>();
 
   get<T>(key: string): { value: T; isStale: boolean } | null {
     const entry = this.store.get(key);
@@ -22,7 +28,12 @@ export class TtlCache {
     return null;
   }
 
-  set<T>(key: string, value: T, ttlMs: number, staleTtlMs = ttlMs * 3): void {
+  set<T>(
+    key: string,
+    value: T,
+    ttlMs: number,
+    staleTtlMs = Math.max(ttlMs * 4, 600_000)
+  ): void {
     const now = Date.now();
     this.store.set(key, {
       value,
@@ -35,23 +46,35 @@ export class TtlCache {
     key: string,
     ttlMs: number,
     fetcher: () => Promise<T>,
-    forceRefresh = false
+    forceRefresh = false,
+    shouldCache: (value: T) => boolean = () => true
   ): Promise<{ value: T; cached: boolean }> {
     const existing = this.get<T>(key);
     if (!forceRefresh && existing && !existing.isStale) {
       return { value: existing.value, cached: true };
     }
 
-    const pending = this.inflight.get(key) as Promise<T> | undefined;
-    if (!forceRefresh && pending) {
-      const value = await pending;
+    const pending = this.inflight.get(key) as InflightEntry<T> | undefined;
+    if (
+      pending &&
+      (!forceRefresh || (pending.wasForced && Date.now() - pending.startedAt < 3000))
+    ) {
+      const value = await pending.promise;
       return { value, cached: true };
     }
+
+    const entry: InflightEntry<T> = {
+      promise: Promise.resolve() as Promise<T>,
+      startedAt: Date.now(),
+      wasForced: forceRefresh,
+    };
 
     const promise = (async () => {
       try {
         const fresh = await fetcher();
-        this.set(key, fresh, ttlMs);
+        if (shouldCache(fresh)) {
+          this.set(key, fresh, ttlMs);
+        }
         return fresh;
       } catch (err) {
         if (existing) {
@@ -59,11 +82,14 @@ export class TtlCache {
         }
         throw err;
       } finally {
-        this.inflight.delete(key);
+        if (this.inflight.get(key) === entry) {
+          this.inflight.delete(key);
+        }
       }
     })();
 
-    this.inflight.set(key, promise);
+    entry.promise = promise;
+    this.inflight.set(key, entry);
     const value = await promise;
     return { value, cached: false };
   }

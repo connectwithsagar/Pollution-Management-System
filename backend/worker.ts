@@ -292,6 +292,6 @@ export function scheduleWorkerPolling(): void {
   }
   // Check due client syncs every 5 seconds so fast 15s/30s/60s sync intervals trigger accurately
   pollTimer = setInterval(() => {
-    void runLiveRefreshCycle(true);
+    void runLiveRefreshCycle(false);
   }, 5_000);
 }

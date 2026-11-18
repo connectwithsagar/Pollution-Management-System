@@ -200,7 +200,7 @@ describe('AetherGrid Backend & Security Tests', () => {
     }
   });
 
-  it('supports TtlCache forceRefresh bypass and live ?refresh=1 Open-Meteo sync', async () => {
+  it('supports TtlCache forceRefresh bypass, shouldCache non-poisoning, stale fallback, and live Open-Meteo sync', async () => {
     const cache = new TtlCache();
     let count = 0;
     const first = await cache.getOrFetch('k', 60_000, async () => ++count, false);
@@ -212,10 +212,73 @@ describe('AetherGrid Backend & Security Tests', () => {
     expect(forced.value).toBe(2);
     expect(forced.cached).toBe(false);
 
+    // Failed/empty payloads rejected by shouldCache must never poison subsequent calls
+    let emptyAttempts = 0;
+    const emptyRes = await cache.getOrFetch(
+      'empty-key',
+      60_000,
+      async () => ({ ok: ++emptyAttempts > 1 }),
+      false,
+      (v) => v.ok
+    );
+    expect(emptyRes.value.ok).toBe(false);
+    const recoveredRes = await cache.getOrFetch(
+      'empty-key',
+      60_000,
+      async () => ({ ok: ++emptyAttempts > 1 }),
+      false,
+      (v) => v.ok
+    );
+    expect(recoveredRes.value.ok).toBe(true);
+    expect(recoveredRes.cached).toBe(false);
+
+    // Stale valid entry should be served if forced/expired re-fetch throws
+    cache.set('stale-key', 'last-good', -10, 60_000);
+    const staleFallback = await cache.getOrFetch('stale-key', 60_000, async () => {
+      throw new Error('HTTP 429');
+    });
+    expect(staleFallback.value).toBe('last-good');
+
+    // Concurrent forced refreshes within 3s coalesce onto one upstream fetch
+    let concurrentForcedCount = 0;
+    const [cf1, cf2] = await Promise.all([
+      cache.getOrFetch(
+        'concurrent-k',
+        60_000,
+        async () => {
+          await new Promise((r) => setTimeout(r, 40));
+          return ++concurrentForcedCount;
+        },
+        true
+      ),
+      cache.getOrFetch(
+        'concurrent-k',
+        60_000,
+        async () => {
+          await new Promise((r) => setTimeout(r, 40));
+          return ++concurrentForcedCount;
+        },
+        true
+      ),
+    ]);
+    expect(cf1.value).toBe(1);
+    expect(cf2.value).toBe(1);
+    expect(concurrentForcedCount).toBe(1);
+
     const liveRes = await req('/api/air-quality/current?lat=28.61&lon=77.21&refresh=1');
     expect(liveRes.status).toBe(200);
     expect(liveRes.body.provider).toBe('Open-Meteo CAMS + Forecast');
     expect(typeof liveRes.body.fetchedAt).toBe('string');
+    const pollutants = liveRes.body.pollutants as Record<string, number | null>;
+    expect(pollutants.pm2_5 !== null || pollutants.usAqi !== null).toBe(true);
+    const weather = liveRes.body.weather as Record<string, number | null>;
+    expect(weather.temperature !== null).toBe(true);
+    expect(liveRes.body.providerErrors).toEqual([]);
+
+    const histRes = await req('/api/air-quality/history?lat=28.61&lon=77.21&days=7');
+    expect(histRes.status).toBe(200);
+    expect(Array.isArray(histRes.body.hourlyPast)).toBe(true);
+    expect((histRes.body.hourlyPast as unknown[]).length).toBeGreaterThan(24);
   });
 
   it('ingests ESP32 JSON and CSV uploads via POST /api/v1/ingest', async () => {

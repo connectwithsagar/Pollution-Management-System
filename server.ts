@@ -1,5 +1,4 @@
 import crypto from 'crypto';
-import fs from 'fs';
 import http from 'http';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -83,6 +82,19 @@ export function createApp() {
         sensorCommunity: settings.enableSensorCommunity,
         openAqConfigured: Boolean(process.env.OPENAQ_API_KEY),
       },
+    });
+  });
+
+  // Google Maps Platform runtime configuration
+  app.get('/api/maps/config', (_req, res) => {
+    const apiKey =
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      '';
+    res.json({
+      configured: Boolean(apiKey),
+      apiKey,
     });
   });
 
@@ -283,7 +295,7 @@ export function createApp() {
       return;
     }
     try {
-      const data = await fetchOpenMeteoAirAndWeather(lat, lon, 2, 2, forceRefresh);
+      const data = await fetchOpenMeteoAirAndWeather(lat, lon, 7, 2, forceRefresh);
       res.json({
         lat,
         lon,
@@ -350,6 +362,14 @@ export function createApp() {
 
     try {
       const om = await fetchOpenMeteoAirAndWeather(lat, lon, 7, 2);
+      if (om.hourlyPast.length === 0 && om.errors.length > 0) {
+        res.status(502).json({
+          status: 'unavailable',
+          reason: `Open-Meteo retrieval failed: ${om.errors.join(' · ')}`,
+          predictions: [],
+        });
+        return;
+      }
       const forecast = await runAiForecast({
         locationKey: `${lat.toFixed(2)}_${lon.toFixed(2)}`,
         target: normalizedTarget,
@@ -971,22 +991,15 @@ export function createApp() {
     }
 
     const updated = dbStore.updateAdminSettings(patch);
+    if (
+      patch.enableOpenMeteo !== undefined ||
+      patch.enableSensorCommunity !== undefined ||
+      patch.enableOpenAq !== undefined
+    ) {
+      apiCache.clear();
+    }
     scheduleWorkerPolling();
     res.json({ settings: updated });
-  });
-
-  // Downloadable Project Presentation (.pptx)
-  app.get('/api/presentation/download', (_req, res) => {
-    const pptPath = path.resolve(process.cwd(), 'AI Project_MyName.pptx');
-    if (!fs.existsSync(pptPath)) {
-      res.status(404).json({ error: 'Presentation file not found.' });
-      return;
-    }
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-    );
-    res.download(pptPath, 'AI Project_MyName.pptx');
   });
 
   return app;

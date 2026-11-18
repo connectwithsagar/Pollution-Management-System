@@ -9,7 +9,6 @@ import {
   Clock,
   Cpu,
   Crosshair,
-  Download,
   Flame,
   LogIn,
   LogOut,
@@ -152,17 +151,32 @@ function DashboardShell() {
   const [loadingHotspots, setLoadingHotspots] = useState(false);
 
   const [loadingTelemetry, setLoadingTelemetry] = useState(false);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const [locatingUser, setLocatingUser] = useState(false);
   const [lastRefreshIso, setLastRefreshIso] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
 
   const socketRef = useRef<ReturnType<typeof createTelemetrySocket> | null>(null);
   const pushRealtimeAlertRef = useRef(pushRealtimeAlert);
+  const activeLoadIdRef = useRef(0);
+  const retryTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     pushRealtimeAlertRef.current = pushRealtimeAlert;
   }, [pushRealtimeAlert]);
+
+  useEffect(() => {
+    const handleQuotaExceeded = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', handleQuotaExceeded);
+    return () => {
+      window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded);
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+      }
+    };
+  }, []);
 
   // Sync dark/light mode class on <html>
   useEffect(() => {
@@ -182,26 +196,88 @@ function DashboardShell() {
   }, []);
 
   const loadAllLocationData = useCallback(
-    async (loc: ActiveLocation, daysCount: number, forceRefresh = false) => {
+    async (
+      loc: ActiveLocation,
+      daysCount: number,
+      forceRefresh = false,
+      isAutoRetry = false
+    ) => {
+      const loadId = ++activeLoadIdRef.current;
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+
       setLoadingTelemetry(true);
       try {
-        const [cur, hist, st] = await Promise.all([
+        const [curRes, histRes, stRes] = await Promise.allSettled([
           api.getCurrentAirQuality(loc.lat, loc.lon, loc.name, forceRefresh),
           api.getHistory(loc.lat, loc.lon, daysCount, forceRefresh),
           api.getStations(loc.lat, loc.lon, 25, forceRefresh),
         ]);
-        setCurrentReading(cur);
-        setHourlyHistory(hist.hourlyPast);
-        setObservedStations(st.observedStations);
-        setModeledGrid(st.modeledGrid);
-        setIotStations(st.iotStations);
-        setLastRefreshIso(new Date().toISOString());
-      } catch (err) {
-        showToast(
-          err instanceof Error ? err.message : 'Unable to refresh live telemetry right now.'
-        );
+
+        if (loadId !== activeLoadIdRef.current) return;
+
+        let needsRetry = false;
+
+        if (curRes.status === 'fulfilled') {
+          const cur = curRes.value;
+          setCurrentReading(cur);
+          setLastRefreshIso(new Date().toISOString());
+
+          const isAllEmpty =
+            cur.pollutants.usAqi === null &&
+            cur.pollutants.pm2_5 === null &&
+            cur.weather.temperature === null;
+
+          if (isAllEmpty) {
+            const reason =
+              cur.providerErrors.length > 0
+                ? cur.providerErrors.join(' · ')
+                : 'Open-Meteo returned empty telemetry for these coordinates.';
+            setTelemetryError(reason);
+            needsRetry = true;
+          } else {
+            setTelemetryError(null);
+          }
+        } else {
+          const errMsg =
+            curRes.reason instanceof Error
+              ? curRes.reason.message
+              : 'Unable to retrieve Open-Meteo telemetry right now.';
+          setTelemetryError(errMsg);
+          showToast(errMsg);
+          needsRetry = true;
+        }
+
+        if (histRes.status === 'fulfilled') {
+          setHourlyHistory(histRes.value.hourlyPast);
+          if (
+            histRes.value.hourlyPast.length === 0 &&
+            histRes.value.errors.length > 0 &&
+            curRes.status !== 'fulfilled'
+          ) {
+            setTelemetryError(histRes.value.errors.join(' · '));
+          }
+        }
+
+        if (stRes.status === 'fulfilled') {
+          setObservedStations(stRes.value.observedStations);
+          setModeledGrid(stRes.value.modeledGrid);
+          setIotStations(stRes.value.iotStations);
+        }
+
+        if (needsRetry && !isAutoRetry) {
+          retryTimerRef.current = window.setTimeout(() => {
+            if (loadId === activeLoadIdRef.current) {
+              void loadAllLocationData(loc, daysCount, true, true);
+            }
+          }, 2500);
+        }
       } finally {
-        setLoadingTelemetry(false);
+        if (loadId === activeLoadIdRef.current) {
+          setLoadingTelemetry(false);
+        }
       }
     },
     [showToast]
@@ -271,6 +347,13 @@ function DashboardShell() {
       (reading) => {
         setCurrentReading(reading);
         setLastRefreshIso(new Date().toISOString());
+        if (
+          reading.pollutants.usAqi !== null ||
+          reading.pollutants.pm2_5 !== null ||
+          reading.weather.temperature !== null
+        ) {
+          setTelemetryError(null);
+        }
       },
       (alert: PollutionAlert) => {
         pushRealtimeAlertRef.current(alert);
@@ -301,10 +384,10 @@ function DashboardShell() {
     if (!autoSyncEnabled) return;
     const intervalMs = Math.max(15, refreshIntervalSec) * 1000;
     const timer = window.setInterval(() => {
-      void loadAllLocationData(activeLocation, historyDays, true);
+      void loadAllLocationData(activeLocation, historyDays, !wsConnected);
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [autoSyncEnabled, activeLocation, historyDays, refreshIntervalSec, loadAllLocationData]);
+  }, [autoSyncEnabled, activeLocation, historyDays, refreshIntervalSec, wsConnected, loadAllLocationData]);
 
   // Autocomplete search debounce
   useEffect(() => {
@@ -540,6 +623,23 @@ function DashboardShell() {
 
       {/* Main Content Area */}
       <div className="flex-1 min-w-0 flex flex-col">
+        {gmpQuotaExceeded && (
+          <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-[1200] shadow-sm">
+            <span>
+              Google Maps Platform quota reached. If you are the app owner, visit{' '}
+              <a
+                href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline font-semibold text-amber-950 hover:text-amber-800"
+              >
+                maps developer site
+              </a>{' '}
+              for instructions to update your account.
+            </span>
+          </div>
+        )}
+
         {/* Top Navigation Bar (3-zone contract: Breadcrumb/Search/Action) */}
         <header className="sticky top-0 z-[900] h-14 px-4 lg:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-[#0B1120]/95 backdrop-blur-sm flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
@@ -605,16 +705,6 @@ function DashboardShell() {
 
           {/* Right Header Controls */}
           <div className="flex items-center gap-2 shrink-0">
-            <a
-              href="/api/presentation/download"
-              download="AI Project_MyName.pptx"
-              title="Download Project Presentation (AI Project_MyName.pptx)"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 text-xs font-medium whitespace-nowrap shrink-0 transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">Download PPT</span>
-            </a>
-
             <button
               type="button"
               onClick={handleLocateUser}
@@ -681,6 +771,7 @@ function DashboardShell() {
               hotspots={hotspotsRes?.hotspots ?? []}
               standard={preferredStandard}
               loading={loadingTelemetry}
+              telemetryError={telemetryError}
               lastRefreshIso={lastRefreshIso}
               wsConnected={wsConnected}
               autoSyncEnabled={autoSyncEnabled}
@@ -705,7 +796,7 @@ function DashboardShell() {
                   Live Smart City Pollution Map
                 </h1>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                  Interactive OpenStreetMap telemetry for {activeLocation.name}. Click &ldquo;Add Marker&rdquo; to place, drag, edit, and query pollution at custom coordinates.
+                  Interactive Google Maps telemetry for {activeLocation.name}. Click &ldquo;Add Marker&rdquo; to place, drag, edit, and query pollution at custom coordinates.
                 </p>
               </div>
               <MapErrorBoundary>

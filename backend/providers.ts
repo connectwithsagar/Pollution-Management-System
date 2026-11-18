@@ -7,17 +7,43 @@ import type {
   StationNode,
 } from './types.ts';
 
-const FETCH_TIMEOUT_MS = 9000;
+const FETCH_TIMEOUT_MS = 8000;
+const HOST_COOLDOWN_MS = 10 * 60_000;
+const hostCooldownUntil = new Map<string, number>();
+
+function isHostInCooldown(hostname: string): boolean {
+  const until = hostCooldownUntil.get(hostname);
+  if (!until) return false;
+  if (Date.now() < until) return true;
+  hostCooldownUntil.delete(hostname);
+  return false;
+}
+
+function markHostCooldown(hostname: string): void {
+  hostCooldownUntil.set(hostname, Date.now() + HOST_COOLDOWN_MS);
+}
+
+function getRetryDelayMs(res: Response | null, attempt: number): number {
+  const retryAfter = res?.headers.get('retry-after');
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.min(2500, Math.round(seconds * 1000));
+    }
+  }
+  return Math.min(1800, 350 * (attempt + 1) + Math.floor(Math.random() * 150));
+}
 
 async function fetchJsonWithTimeout<T>(
   url: string,
   headers: Record<string, string> = {},
-  retries = 1
+  retries = 1,
+  timeoutMs = FETCH_TIMEOUT_MS
 ): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(url, {
         headers: {
@@ -28,9 +54,10 @@ async function fetchJsonWithTimeout<T>(
       });
       if (!res.ok) {
         const err = new Error(`HTTP ${res.status} from ${new URL(url).hostname}`);
-        if (res.status >= 500 && attempt < retries) {
+        const retryable = res.status === 429 || res.status === 408 || res.status >= 500;
+        if (retryable && attempt < retries) {
           lastErr = err;
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, getRetryDelayMs(res, attempt)));
           continue;
         }
         throw err;
@@ -39,7 +66,7 @@ async function fetchJsonWithTimeout<T>(
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, getRetryDelayMs(null, attempt)));
         continue;
       }
       throw err;
@@ -293,13 +320,7 @@ function normalizeOpenMeteoIso(raw?: string | null): string | null {
   return `${raw}Z`;
 }
 
-export async function fetchOpenMeteoAirAndWeather(
-  lat: number,
-  lon: number,
-  pastDays = 7,
-  forecastDays = 2,
-  forceRefresh = false
-): Promise<{
+type OpenMeteoBundle = {
   current: {
     observedAt: string | null;
     usAqi: number | null;
@@ -319,106 +340,293 @@ export async function fetchOpenMeteoAirAndWeather(
   hourlyPast: HourlyPoint[];
   hourlyForecast: HourlyPoint[];
   errors: string[];
-}> {
-  const key = `om:${lat.toFixed(3)}:${lon.toFixed(3)}:${pastDays}:${forecastDays}`;
-  const errors: string[] = [];
+};
 
-  const { value } = await apiCache.getOrFetch(
-    key,
-    45_000,
-    async () => {
-      const aqUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&hourly=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
-      const wxUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,surface_pressure&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
+function buildEmptyOpenMeteoBundle(errors: string[]): OpenMeteoBundle {
+  return {
+    current: {
+      observedAt: null,
+      usAqi: null,
+      euAqi: null,
+      pm2_5: null,
+      pm10: null,
+      co: null,
+      no2: null,
+      so2: null,
+      o3: null,
+      temperature: null,
+      humidity: null,
+      windSpeed: null,
+      windDirection: null,
+      surfacePressure: null,
+    },
+    hourlyPast: [],
+    hourlyForecast: [],
+    errors,
+  };
+}
 
-    const [aqRes, wxRes] = await Promise.allSettled([
-      fetchJsonWithTimeout<OpenMeteoAirQualityResponse>(aqUrl),
-      fetchJsonWithTimeout<OpenMeteoWeatherResponse>(wxUrl),
-    ]);
-
-    const aq = aqRes.status === 'fulfilled' ? aqRes.value : null;
-    if (aqRes.status === 'rejected') {
-      errors.push(`Open-Meteo Air Quality failed: ${String(aqRes.reason)}`);
-    }
-    const wx = wxRes.status === 'fulfilled' ? wxRes.value : null;
-    if (wxRes.status === 'rejected') {
-      errors.push(`Open-Meteo Weather failed: ${String(wxRes.reason)}`);
-    }
-
-    const wxByTime = new Map<
-      string,
-      { temperature: number | null; humidity: number | null; windSpeed: number | null; windDirection: number | null }
-    >();
-    const wxTimes = wx?.hourly?.time ?? [];
-    for (let i = 0; i < wxTimes.length; i++) {
-      wxByTime.set(wxTimes[i], {
-        temperature: numOrNull(wx?.hourly?.temperature_2m?.[i]),
-        humidity: numOrNull(wx?.hourly?.relative_humidity_2m?.[i]),
-        windSpeed: numOrNull(wx?.hourly?.wind_speed_10m?.[i]),
-        windDirection: numOrNull(wx?.hourly?.wind_direction_10m?.[i]),
-      });
-    }
-
-    const nowMs = Date.now();
-    const hourlyPast: HourlyPoint[] = [];
-    const hourlyForecast: HourlyPoint[] = [];
-
-    const aqTimes = aq?.hourly?.time ?? [];
-    for (let i = 0; i < aqTimes.length; i++) {
-      const tRaw = aqTimes[i];
-      const tIso = tRaw.endsWith('Z') ? tRaw : `${tRaw}:00Z`;
-      const wxRow = wxByTime.get(tRaw);
-      const pt: HourlyPoint = {
-        timestamp: tIso,
-        usAqi: numOrNull(aq?.hourly?.us_aqi?.[i]),
-        euAqi: numOrNull(aq?.hourly?.european_aqi?.[i]),
-        pm2_5: numOrNull(aq?.hourly?.pm2_5?.[i]),
-        pm10: numOrNull(aq?.hourly?.pm10?.[i]),
-        co: numOrNull(aq?.hourly?.carbon_monoxide?.[i]),
-        no2: numOrNull(aq?.hourly?.nitrogen_dioxide?.[i]),
-        so2: numOrNull(aq?.hourly?.sulphur_dioxide?.[i]),
-        o3: numOrNull(aq?.hourly?.ozone?.[i]),
-        temperature: wxRow?.temperature ?? null,
-        humidity: wxRow?.humidity ?? null,
-        windSpeed: wxRow?.windSpeed ?? null,
-        windDirection: wxRow?.windDirection ?? null,
-        sourceType: 'modeled',
-        provider: 'Open-Meteo CAMS',
+interface MetNoLocationForecastResponse {
+  properties?: {
+    timeseries?: Array<{
+      time?: string;
+      data?: {
+        instant?: {
+          details?: {
+            air_temperature?: number;
+            relative_humidity?: number;
+            wind_speed?: number;
+            wind_from_direction?: number;
+            air_pressure_at_sea_level?: number;
+          };
+        };
       };
+    }>;
+  };
+}
 
-      const ptMs = Date.parse(tIso);
-      if (Number.isFinite(ptMs) && ptMs <= nowMs + 3600_000) {
-        hourlyPast.push(pt);
-      } else {
-        hourlyForecast.push(pt);
-      }
+async function fetchOpenMeteoWeatherWithFailover(
+  lat: number,
+  lon: number,
+  pastDays: number,
+  forecastDays: number
+): Promise<OpenMeteoWeatherResponse> {
+  const query = `latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,surface_pressure&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
+  const primaryHost = 'api.open-meteo.com';
+  let lastErr: unknown;
+
+  if (!isHostInCooldown(primaryHost)) {
+    try {
+      return await fetchJsonWithTimeout<OpenMeteoWeatherResponse>(
+        `https://${primaryHost}/v1/forecast?${query}`,
+        {},
+        0,
+        3500
+      );
+    } catch (err) {
+      lastErr = err;
+      markHostCooldown(primaryHost);
     }
+  }
 
-    return {
-      current: {
-        observedAt: normalizeOpenMeteoIso(aq?.current?.time),
-        usAqi: numOrNull(aq?.current?.us_aqi),
-        euAqi: numOrNull(aq?.current?.european_aqi),
-        pm2_5: numOrNull(aq?.current?.pm2_5),
-        pm10: numOrNull(aq?.current?.pm10),
-        co: numOrNull(aq?.current?.carbon_monoxide),
-        no2: numOrNull(aq?.current?.nitrogen_dioxide),
-        so2: numOrNull(aq?.current?.sulphur_dioxide),
-        o3: numOrNull(aq?.current?.ozone),
-        temperature: numOrNull(wx?.current?.temperature_2m),
-        humidity: numOrNull(wx?.current?.relative_humidity_2m),
-        windSpeed: numOrNull(wx?.current?.wind_speed_10m),
-        windDirection: numOrNull(wx?.current?.wind_direction_10m),
-        surfacePressure: numOrNull(wx?.current?.surface_pressure),
-      },
-      hourlyPast,
-      hourlyForecast,
-      errors,
-    };
-  },
-  forceRefresh
+  try {
+    return await fetchJsonWithTimeout<OpenMeteoWeatherResponse>(
+      `https://historical-forecast-api.open-meteo.com/v1/forecast?${query}`,
+      {},
+      1,
+      6500
+    );
+  } catch (err) {
+    lastErr = err;
+  }
+
+  // Final fallback via Norwegian Meteorological Institute (MET Norway) Locationforecast 2.0
+  const metRes = await fetchJsonWithTimeout<MetNoLocationForecastResponse>(
+    `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`,
+    { 'User-Agent': 'AetherGridSmartCity/1.0 (environmental-dashboard)' },
+    0,
+    6000
   );
 
-  return value;
+  const series = metRes.properties?.timeseries ?? [];
+  if (series.length === 0) {
+    throw lastErr instanceof Error ? lastErr : new Error('All weather upstream endpoints failed');
+  }
+
+  const firstDetails = series[0]?.data?.instant?.details;
+  const times: string[] = [];
+  const temps: Array<number | null> = [];
+  const hums: Array<number | null> = [];
+  const winds: Array<number | null> = [];
+  const dirs: Array<number | null> = [];
+
+  for (const row of series) {
+    if (!row.time) continue;
+    const d = row.data?.instant?.details;
+    times.push(row.time.slice(0, 16));
+    temps.push(numOrNull(d?.air_temperature));
+    hums.push(numOrNull(d?.relative_humidity));
+    const ms = numOrNull(d?.wind_speed);
+    winds.push(ms !== null ? Number((ms * 3.6).toFixed(1)) : null);
+    dirs.push(numOrNull(d?.wind_from_direction));
+  }
+
+  const curWindMs = numOrNull(firstDetails?.wind_speed);
+  return {
+    current: {
+      time: series[0]?.time?.slice(0, 16),
+      temperature_2m: numOrNull(firstDetails?.air_temperature) ?? undefined,
+      relative_humidity_2m: numOrNull(firstDetails?.relative_humidity) ?? undefined,
+      wind_speed_10m: curWindMs !== null ? Number((curWindMs * 3.6).toFixed(1)) : undefined,
+      wind_direction_10m: numOrNull(firstDetails?.wind_from_direction) ?? undefined,
+      surface_pressure: numOrNull(firstDetails?.air_pressure_at_sea_level) ?? undefined,
+    },
+    hourly: {
+      time: times,
+      temperature_2m: temps,
+      relative_humidity_2m: hums,
+      wind_speed_10m: winds,
+      wind_direction_10m: dirs,
+    },
+  };
+}
+
+export async function fetchOpenMeteoAirAndWeather(
+  lat: number,
+  lon: number,
+  pastDays = 7,
+  forecastDays = 2,
+  forceRefresh = false
+): Promise<OpenMeteoBundle> {
+  const settings = dbStore.getAdminSettings();
+  if (!settings.enableOpenMeteo) {
+    return buildEmptyOpenMeteoBundle(['Open-Meteo provider is disabled in Admin Settings.']);
+  }
+
+  // Reuse an already-cached default 7d/2d bundle when a smaller window is requested
+  const defaultWindowKey = `om:${lat.toFixed(3)}:${lon.toFixed(3)}:7:2`;
+  const key = `om:${lat.toFixed(3)}:${lon.toFixed(3)}:${pastDays}:${forecastDays}`;
+  if (!forceRefresh && pastDays < 7 && forecastDays <= 2) {
+    const cachedLarger = apiCache.get<OpenMeteoBundle>(defaultWindowKey);
+    if (cachedLarger && !cachedLarger.isStale) {
+      return cachedLarger.value;
+    }
+  }
+
+  try {
+    const { value } = await apiCache.getOrFetch<OpenMeteoBundle>(
+      key,
+      45_000,
+      async () => {
+        const localErrors: string[] = [];
+        const aqUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&hourly=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&past_days=${pastDays}&forecast_days=${forecastDays}&timezone=UTC`;
+
+        const [aqRes, wxRes] = await Promise.allSettled([
+          fetchJsonWithTimeout<OpenMeteoAirQualityResponse>(aqUrl, {}, 1, 7000),
+          fetchOpenMeteoWeatherWithFailover(lat, lon, pastDays, forecastDays),
+        ]);
+
+        const aq = aqRes.status === 'fulfilled' ? aqRes.value : null;
+        if (aqRes.status === 'rejected') {
+          const msg = aqRes.reason instanceof Error ? aqRes.reason.message : String(aqRes.reason);
+          localErrors.push(`Open-Meteo Air Quality failed: ${msg}`);
+        }
+        const wx = wxRes.status === 'fulfilled' ? wxRes.value : null;
+        if (wxRes.status === 'rejected') {
+          const msg = wxRes.reason instanceof Error ? wxRes.reason.message : String(wxRes.reason);
+          localErrors.push(`Open-Meteo Weather failed: ${msg}`);
+        }
+
+        if (!aq && !wx) {
+          throw new Error(localErrors.join(' · ') || 'Open-Meteo upstream unreachable');
+        }
+
+        const wxByTime = new Map<
+          string,
+          {
+            temperature: number | null;
+            humidity: number | null;
+            windSpeed: number | null;
+            windDirection: number | null;
+          }
+        >();
+        const wxTimes = wx?.hourly?.time ?? [];
+        for (let i = 0; i < wxTimes.length; i++) {
+          wxByTime.set(wxTimes[i], {
+            temperature: numOrNull(wx?.hourly?.temperature_2m?.[i]),
+            humidity: numOrNull(wx?.hourly?.relative_humidity_2m?.[i]),
+            windSpeed: numOrNull(wx?.hourly?.wind_speed_10m?.[i]),
+            windDirection: numOrNull(wx?.hourly?.wind_direction_10m?.[i]),
+          });
+        }
+
+        const nowMs = Date.now();
+        const hourlyPast: HourlyPoint[] = [];
+        const hourlyForecast: HourlyPoint[] = [];
+
+        const aqTimes = aq?.hourly?.time ?? [];
+        for (let i = 0; i < aqTimes.length; i++) {
+          const tRaw = aqTimes[i];
+          const tIso = tRaw.endsWith('Z') ? tRaw : `${tRaw}:00Z`;
+          const wxRow = wxByTime.get(tRaw);
+          const pm25Val = numOrNull(aq?.hourly?.pm2_5?.[i]);
+          const pt: HourlyPoint = {
+            timestamp: tIso,
+            usAqi: numOrNull(aq?.hourly?.us_aqi?.[i]) ?? computeUsAqiFromPm25(pm25Val),
+            euAqi: numOrNull(aq?.hourly?.european_aqi?.[i]),
+            pm2_5: pm25Val,
+            pm10: numOrNull(aq?.hourly?.pm10?.[i]),
+            co: numOrNull(aq?.hourly?.carbon_monoxide?.[i]),
+            no2: numOrNull(aq?.hourly?.nitrogen_dioxide?.[i]),
+            so2: numOrNull(aq?.hourly?.sulphur_dioxide?.[i]),
+            o3: numOrNull(aq?.hourly?.ozone?.[i]),
+            temperature: wxRow?.temperature ?? null,
+            humidity: wxRow?.humidity ?? null,
+            windSpeed: wxRow?.windSpeed ?? null,
+            windDirection: wxRow?.windDirection ?? null,
+            sourceType: 'modeled',
+            provider: 'Open-Meteo CAMS',
+          };
+
+          const ptMs = Date.parse(tIso);
+          if (Number.isFinite(ptMs) && ptMs <= nowMs + 3600_000) {
+            hourlyPast.push(pt);
+          } else {
+            hourlyForecast.push(pt);
+          }
+        }
+
+        const latestHourlyAq =
+          [...hourlyPast]
+            .reverse()
+            .find((p) => p.pm2_5 !== null || p.usAqi !== null || p.pm10 !== null) ?? null;
+
+        const curPm25 = numOrNull(aq?.current?.pm2_5) ?? latestHourlyAq?.pm2_5 ?? null;
+        const curUsAqi =
+          numOrNull(aq?.current?.us_aqi) ??
+          latestHourlyAq?.usAqi ??
+          computeUsAqiFromPm25(curPm25);
+
+        return {
+          current: {
+            observedAt:
+              normalizeOpenMeteoIso(aq?.current?.time) ??
+              normalizeOpenMeteoIso(wx?.current?.time) ??
+              latestHourlyAq?.timestamp ??
+              null,
+            usAqi: curUsAqi,
+            euAqi: numOrNull(aq?.current?.european_aqi) ?? latestHourlyAq?.euAqi ?? null,
+            pm2_5: curPm25,
+            pm10: numOrNull(aq?.current?.pm10) ?? latestHourlyAq?.pm10 ?? null,
+            co: numOrNull(aq?.current?.carbon_monoxide) ?? latestHourlyAq?.co ?? null,
+            no2: numOrNull(aq?.current?.nitrogen_dioxide) ?? latestHourlyAq?.no2 ?? null,
+            so2: numOrNull(aq?.current?.sulphur_dioxide) ?? latestHourlyAq?.so2 ?? null,
+            o3: numOrNull(aq?.current?.ozone) ?? latestHourlyAq?.o3 ?? null,
+            temperature: numOrNull(wx?.current?.temperature_2m) ?? latestHourlyAq?.temperature ?? null,
+            humidity:
+              numOrNull(wx?.current?.relative_humidity_2m) ?? latestHourlyAq?.humidity ?? null,
+            windSpeed: numOrNull(wx?.current?.wind_speed_10m) ?? latestHourlyAq?.windSpeed ?? null,
+            windDirection:
+              numOrNull(wx?.current?.wind_direction_10m) ?? latestHourlyAq?.windDirection ?? null,
+            surfacePressure: numOrNull(wx?.current?.surface_pressure),
+          },
+          hourlyPast,
+          hourlyForecast,
+          errors: localErrors,
+        };
+      },
+      forceRefresh,
+      (bundle) =>
+        bundle.current.usAqi !== null ||
+        bundle.current.pm2_5 !== null ||
+        bundle.hourlyPast.length > 0
+    );
+
+    return value;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return buildEmptyOpenMeteoBundle([msg]);
+  }
 }
 
 export async function fetchModeledMetroGrid(
@@ -426,6 +634,9 @@ export async function fetchModeledMetroGrid(
   lon: number,
   forceRefresh = false
 ): Promise<StationNode[]> {
+  if (!dbStore.getAdminSettings().enableOpenMeteo) {
+    return [];
+  }
   const key = `grid:${lat.toFixed(2)}:${lon.toFixed(2)}`;
   try {
     const { value } = await apiCache.getOrFetch(
@@ -447,9 +658,11 @@ export async function fetchModeledMetroGrid(
         const lons = coords.map((c) => c.lon).join(',');
         const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lats}&longitude=${lons}&current=us_aqi,european_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone&timezone=UTC`;
         const data = await fetchJsonWithTimeout<OpenMeteoAirQualityResponse[]>(url);
-        if (!Array.isArray(data)) return [];
+        if (!Array.isArray(data) || data.length === 0) {
+          throw new Error('Open-Meteo grid returned empty response');
+        }
 
-        return data.map((item, idx) => ({
+        return data.slice(0, coords.length).map((item, idx) => ({
           id: `om-grid-${idx}`,
           name: coords[idx].label,
           lat: coords[idx].lat,
@@ -464,13 +677,16 @@ export async function fetchModeledMetroGrid(
           o3: numOrNull(item.current?.ozone),
           co: numOrNull(item.current?.carbon_monoxide),
           so2: numOrNull(item.current?.sulphur_dioxide),
-          us_aqi: numOrNull(item.current?.us_aqi),
+          us_aqi:
+            numOrNull(item.current?.us_aqi) ??
+            computeUsAqiFromPm25(numOrNull(item.current?.pm2_5)),
           eu_aqi: numOrNull(item.current?.european_aqi),
           temperature: null,
           humidity: null,
         }));
       },
-      forceRefresh
+      forceRefresh,
+      (nodes) => nodes.length > 0
     );
     return value;
   } catch {
@@ -484,8 +700,9 @@ export async function getCurrentAirQuality(
   locationLabel?: string,
   forceRefresh = false
 ): Promise<AirQualityReading> {
+  // Use 7-day / 2-day window so /api/air-quality/current, /history, and /predictions coalesce onto one Open-Meteo fetch
   const [omResult, scResult] = await Promise.all([
-    fetchOpenMeteoAirAndWeather(lat, lon, 2, 1, forceRefresh),
+    fetchOpenMeteoAirAndWeather(lat, lon, 7, 2, forceRefresh),
     fetchSensorCommunityStations(lat, lon, 12),
   ]);
 

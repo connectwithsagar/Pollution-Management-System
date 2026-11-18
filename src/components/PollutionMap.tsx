@@ -1,5 +1,18 @@
-import React, { useEffect, useRef, useState } from 'react';
-import L from '../services/leafletSetup.ts';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  APILoadingStatus,
+  APIProvider,
+  AdvancedMarker,
+  Circle,
+  ColorScheme,
+  InfoWindow,
+  Map as GoogleMap,
+  useApiLoadingStatus,
+  useMap,
+  useMapsLibrary,
+  type AdvancedMarkerRef,
+} from '@vis.gl/react-google-maps';
+import { MarkerClusterer, type Cluster } from '@googlemaps/markerclusterer';
 import {
   Crosshair,
   Edit3,
@@ -42,24 +55,294 @@ const MARKER_TYPE_COLORS: Record<MarkerType, string> = {
   monitoring_point: '#38bdf8',
 };
 
-function createCircleDivIcon(color: string, label: string, ringColor = '#ffffff') {
-  return L.divIcon({
-    className: 'aether-station-marker',
-    html: `<div style="width:28px;height:28px;border-radius:9999px;background:${color};border:2px solid ${ringColor};display:flex;align-items:center;justify-content:center;color:#fff;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.4);">${label}</div>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-  });
+const DEMO_MAP_ID = 'DEMO_MAP_ID';
+
+function StationPinContent({
+  color,
+  label,
+  ringColor = '#ffffff',
+}: {
+  color: string;
+  label: string;
+  ringColor?: string;
+}) {
+  return (
+    <div
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 9999,
+        background: color,
+        border: `2px solid ${ringColor}`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: '#ffffff',
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontSize: 10,
+        fontWeight: 600,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </div>
+  );
 }
 
-function createCustomPinIcon(type: MarkerType, isDraft = false) {
+function CustomDiamondPin({
+  type,
+  isDraft = false,
+}: {
+  type: MarkerType;
+  isDraft?: boolean;
+}) {
   const color = MARKER_TYPE_COLORS[type] || '#06b6d4';
   const short = type.slice(0, 1).toUpperCase();
-  return L.divIcon({
-    className: 'aether-custom-marker',
-    html: `<div style="width:30px;height:30px;border-radius:8px;transform:rotate(45deg);background:${color};border:2px solid ${isDraft ? '#fde047' : '#ffffff'};display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(0,0,0,0.45);"><span style="transform:rotate(-45deg);color:#070b14;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;">${short}</span></div>`,
-    iconSize: [30, 30],
-    iconAnchor: [15, 15],
-  });
+  return (
+    <div
+      style={{
+        width: 30,
+        height: 30,
+        borderRadius: 8,
+        transform: 'rotate(45deg)',
+        background: color,
+        border: `2px solid ${isDraft ? '#fde047' : '#ffffff'}`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxShadow: '0 3px 10px rgba(0,0,0,0.45)',
+        cursor: isDraft ? 'grab' : 'pointer',
+      }}
+    >
+      <span
+        style={{
+          transform: 'rotate(-45deg)',
+          color: '#070b14',
+          fontFamily: "'IBM Plex Mono', monospace",
+          fontSize: 11,
+          fontWeight: 700,
+        }}
+      >
+        {short}
+      </span>
+    </div>
+  );
+}
+
+function MapStatusMonitor({
+  onError,
+}: {
+  onError: (msg: string | null) => void;
+}) {
+  const status = useApiLoadingStatus();
+
+  useEffect(() => {
+    if (status === APILoadingStatus.AUTH_FAILURE) {
+      window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+      onError('Google Maps authentication or quota limit reached.');
+    } else if (status === APILoadingStatus.FAILED) {
+      onError('Failed to load Google Maps JavaScript API.');
+    } else if (status === APILoadingStatus.LOADED) {
+      onError(null);
+    }
+  }, [status, onError]);
+
+  return null;
+}
+
+function MapController({
+  activeLocation,
+  addingMode,
+  focusTarget,
+}: {
+  activeLocation: ActiveLocation;
+  addingMode: boolean;
+  focusTarget: { lat: number; lon: number; zoom?: number; seq: number } | null;
+}) {
+  const map = useMap();
+  const lastCenteredRef = useRef<{ lat: number; lon: number } | null>(null);
+
+  useEffect(() => {
+    if (!map) return;
+    map.setOptions({
+      draggableCursor: addingMode ? 'crosshair' : undefined,
+    });
+    return () => {
+      try {
+        map.setOptions({ draggableCursor: undefined });
+      } catch {
+        // ignore cleanup on unmount
+      }
+    };
+  }, [map, addingMode]);
+
+  useEffect(() => {
+    if (!map) return;
+    if (!Number.isFinite(activeLocation.lat) || !Number.isFinite(activeLocation.lon)) return;
+
+    const prev = lastCenteredRef.current;
+    if (
+      prev &&
+      Math.abs(prev.lat - activeLocation.lat) < 1e-5 &&
+      Math.abs(prev.lon - activeLocation.lon) < 1e-5
+    ) {
+      return;
+    }
+
+    lastCenteredRef.current = { lat: activeLocation.lat, lon: activeLocation.lon };
+    map.panTo({ lat: activeLocation.lat, lng: activeLocation.lon });
+    const currentZoom = map.getZoom();
+    if (typeof currentZoom === 'number' && currentZoom < 11) {
+      map.setZoom(11);
+    }
+  }, [map, activeLocation.lat, activeLocation.lon]);
+
+  useEffect(() => {
+    if (!map || !focusTarget) return;
+    if (!Number.isFinite(focusTarget.lat) || !Number.isFinite(focusTarget.lon)) return;
+    map.panTo({ lat: focusTarget.lat, lng: focusTarget.lon });
+    if (typeof focusTarget.zoom === 'number') {
+      map.setZoom(focusTarget.zoom);
+    }
+  }, [map, focusTarget]);
+
+  return null;
+}
+
+function ClusteredStationMarkers({
+  stations,
+  visible,
+  standard,
+  onSelectStation,
+}: {
+  stations: StationNode[];
+  visible: boolean;
+  standard: AqiStandard;
+  onSelectStation: (station: StationNode) => void;
+}) {
+  const map = useMap();
+  const markerLib = useMapsLibrary('marker');
+  const clustererRef = useRef<MarkerClusterer | null>(null);
+  const onSelectRef = useRef(onSelectStation);
+
+  useEffect(() => {
+    onSelectRef.current = onSelectStation;
+  }, [onSelectStation]);
+
+  useEffect(() => {
+    if (!map || !markerLib) return;
+
+    const clusterer = new MarkerClusterer({
+      map,
+      renderer: {
+        render: ({ count, position }: Cluster) => {
+          const badge = document.createElement('div');
+          badge.style.width = '34px';
+          badge.style.height = '34px';
+          badge.style.borderRadius = '9999px';
+          badge.style.background =
+            count >= 25
+              ? 'rgba(220, 38, 38, 0.92)'
+              : count >= 10
+                ? 'rgba(217, 119, 6, 0.92)'
+                : 'rgba(8, 145, 178, 0.92)';
+          badge.style.border = '2px solid rgba(255, 255, 255, 0.9)';
+          badge.style.display = 'flex';
+          badge.style.alignItems = 'center';
+          badge.style.justifyContent = 'center';
+          badge.style.color = '#ffffff';
+          badge.style.fontFamily = "'IBM Plex Mono', monospace";
+          badge.style.fontSize = '11px';
+          badge.style.fontWeight = '700';
+          badge.style.boxShadow = '0 3px 10px rgba(0,0,0,0.45)';
+          badge.style.cursor = 'pointer';
+          badge.textContent = String(count);
+
+          return new markerLib.AdvancedMarkerElement({
+            position,
+            content: badge,
+            zIndex: 900 + count,
+            title: `Cluster of ${count} monitoring stations`,
+          });
+        },
+      },
+    });
+
+    clustererRef.current = clusterer;
+
+    return () => {
+      clusterer.clearMarkers();
+      clustererRef.current = null;
+    };
+  }, [map, markerLib]);
+
+  useEffect(() => {
+    const clusterer = clustererRef.current;
+    if (!clusterer || !markerLib) return;
+
+    clusterer.clearMarkers();
+    if (!visible) return;
+
+    const listeners: Array<{ remove: () => void }> = [];
+    const createdMarkers: Array<NonNullable<AdvancedMarkerRef>> = [];
+
+    stations.forEach((st) => {
+      if (!Number.isFinite(st.lat) || !Number.isFinite(st.lon)) return;
+      const aqiVal = standard === 'EU_AQI' ? st.eu_aqi ?? st.us_aqi : st.us_aqi;
+      const cat = getAqiCategory(aqiVal, standard);
+      const label =
+        typeof aqiVal === 'number' && Number.isFinite(aqiVal)
+          ? String(Math.round(aqiVal))
+          : typeof st.pm2_5 === 'number' && Number.isFinite(st.pm2_5)
+            ? st.pm2_5.toFixed(0)
+            : '•';
+
+      const content = document.createElement('div');
+      content.style.width = '28px';
+      content.style.height = '28px';
+      content.style.borderRadius = '9999px';
+      content.style.background = cat.colorHex;
+      content.style.border = '2px solid #ffffff';
+      content.style.display = 'flex';
+      content.style.alignItems = 'center';
+      content.style.justifyContent = 'center';
+      content.style.color = '#ffffff';
+      content.style.fontFamily = "'IBM Plex Mono', monospace";
+      content.style.fontSize = '10px';
+      content.style.fontWeight = '600';
+      content.style.boxShadow = '0 2px 6px rgba(0,0,0,0.4)';
+      content.style.cursor = 'pointer';
+      content.textContent = label;
+
+      const advMarker = new markerLib.AdvancedMarkerElement({
+        position: { lat: st.lat, lng: st.lon },
+        content,
+        title: `${st.name} (${st.provider})`,
+      });
+
+      const listener = advMarker.addListener('click', () => {
+        onSelectRef.current(st);
+      });
+
+      listeners.push(listener);
+      createdMarkers.push(advMarker);
+    });
+
+    if (createdMarkers.length > 0) {
+      clusterer.addMarkers(createdMarkers);
+    }
+
+    return () => {
+      listeners.forEach((l) => l.remove());
+      clusterer.clearMarkers();
+      createdMarkers.forEach((m) => {
+        m.map = null;
+      });
+    };
+  }, [stations, visible, standard, markerLib]);
+
+  return null;
 }
 
 export function PollutionMap({
@@ -87,15 +370,12 @@ export function PollutionMap({
 }) {
   const { user, markers, createMarker, updateMarker, deleteMarker } = useAuth();
 
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<L.Map | null>(null);
-  const tileLayerRef = useRef<L.TileLayer | null>(null);
-  const stationClusterRef = useRef<L.MarkerClusterGroup | null>(null);
-  const gridLayerRef = useRef<L.LayerGroup | null>(null);
-  const userMarkerLayerRef = useRef<L.LayerGroup | null>(null);
-  const hotspotLayerRef = useRef<L.LayerGroup | null>(null);
-  const iotLayerRef = useRef<L.LayerGroup | null>(null);
-  const draftMarkerRef = useRef<L.Marker | null>(null);
+  const [mapsApiKey, setMapsApiKey] = useState<string>(() =>
+    (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim()
+  );
+  const [loadingConfig, setLoadingConfig] = useState<boolean>(
+    !(import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim()
+  );
 
   const [layers, setLayers] = useState({
     stations: true,
@@ -116,417 +396,82 @@ export function PollutionMap({
 
   const [selectedStation, setSelectedStation] = useState<StationNode | null>(null);
   const [selectedCustomMarker, setSelectedCustomMarker] = useState<CustomMarker | null>(null);
+  const [selectedHotspot, setSelectedHotspot] = useState<HotspotCluster | null>(null);
   const [markerAirData, setMarkerAirData] = useState<AirQualityReading | null>(null);
   const [loadingMarkerAir, setLoadingMarkerAir] = useState(false);
   const [geoStatus, setGeoStatus] = useState<string | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
-  const [mapReady, setMapReady] = useState(false);
-  const [clusterVersion, setClusterVersion] = useState(0);
   const [initAttempt, setInitAttempt] = useState(0);
+  const [focusTarget, setFocusTarget] = useState<{
+    lat: number;
+    lon: number;
+    zoom?: number;
+    seq: number;
+  } | null>(null);
 
-  // Initialize Leaflet Map synchronously (StrictMode-safe; never blocked by async plugin imports)
+  // Resolve Google Maps API key from Vite env or backend runtime config
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    let disposed = false;
-    let resizeObserver: ResizeObserver | null = null;
-    let createdMap: L.Map | null = null;
-    let rafId = 0;
-    let timerId = 0;
-
-    try {
-      // Clear any stale Leaflet instance binding on remount / HMR
-      const leafletEl = el as unknown as { _leaflet_id?: number };
-      if (leafletEl._leaflet_id) {
-        delete leafletEl._leaflet_id;
-        el.innerHTML = '';
-      }
-
-      (window as unknown as { L: typeof L }).L = L;
-
-      const safeLat = Number.isFinite(activeLocation.lat) ? activeLocation.lat : 37.7749;
-      const safeLon = Number.isFinite(activeLocation.lon) ? activeLocation.lon : -122.4194;
-
-      const map = L.map(el, {
-        center: [safeLat, safeLon],
-        zoom: 12,
-        zoomControl: true,
-      });
-      createdMap = map;
-
-      const globalL = (window as unknown as {
-        L?: { markerClusterGroup?: (opts: Record<string, unknown>) => L.MarkerClusterGroup };
-      }).L;
-      const clusterFactory =
-        (L as unknown as {
-          markerClusterGroup?: (opts: Record<string, unknown>) => L.MarkerClusterGroup;
-        }).markerClusterGroup ?? globalL?.markerClusterGroup;
-
-      const clusterGroup =
-        typeof clusterFactory === 'function'
-          ? clusterFactory({
-              maxClusterRadius: 42,
-              disableClusteringAtZoom: 14,
-            })
-          : (L.layerGroup() as unknown as L.MarkerClusterGroup);
-
-      const gridGroup = L.layerGroup().addTo(map);
-      const customGroup = L.layerGroup().addTo(map);
-      const hotspotGroup = L.layerGroup().addTo(map);
-      const iotGroup = L.layerGroup().addTo(map);
-      map.addLayer(clusterGroup);
-
-      mapRef.current = map;
-      stationClusterRef.current = clusterGroup;
-      gridLayerRef.current = gridGroup;
-      userMarkerLayerRef.current = customGroup;
-      hotspotLayerRef.current = hotspotGroup;
-      iotLayerRef.current = iotGroup;
-
-      rafId = window.requestAnimationFrame(() => {
-        if (!disposed) map.invalidateSize();
-      });
-      timerId = window.setTimeout(() => {
-        if (!disposed) map.invalidateSize();
-      }, 150);
-
-      if (typeof ResizeObserver !== 'undefined') {
-        resizeObserver = new ResizeObserver(() => {
-          if (!disposed) map.invalidateSize();
-        });
-        resizeObserver.observe(el);
-      }
-
-      setMapError(null);
-      setMapReady(true);
-
-      // Non-blocking background load for MarkerCluster plugin upgrade
-      if (typeof clusterFactory !== 'function') {
-        void import('leaflet.markercluster')
-          .then(() => {
-            if (disposed || !mapRef.current) return;
-            const upgradedFactory =
-              (L as unknown as {
-                markerClusterGroup?: (opts: Record<string, unknown>) => L.MarkerClusterGroup;
-              }).markerClusterGroup ??
-              (window as unknown as {
-                L?: { markerClusterGroup?: (opts: Record<string, unknown>) => L.MarkerClusterGroup };
-              }).L?.markerClusterGroup;
-            if (typeof upgradedFactory === 'function') {
-              const oldGroup = stationClusterRef.current;
-              if (oldGroup && mapRef.current.hasLayer(oldGroup)) {
-                mapRef.current.removeLayer(oldGroup);
-              }
-              const nextCluster = upgradedFactory({
-                maxClusterRadius: 42,
-                disableClusteringAtZoom: 14,
-              });
-              mapRef.current.addLayer(nextCluster);
-              stationClusterRef.current = nextCluster;
-              setClusterVersion((v) => v + 1);
-            }
-          })
-          .catch((clusterErr) => {
-            console.warn('MarkerCluster plugin unavailable, keeping LayerGroup:', clusterErr);
-          });
-      }
-    } catch (err) {
-      console.error('Failed to initialize Leaflet map:', err);
-      setMapError(err instanceof Error ? err.message : 'Unable to initialize interactive map.');
+    const envKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '').trim();
+    if (envKey) {
+      setMapsApiKey(envKey);
+      setLoadingConfig(false);
+      return;
     }
 
+    let cancelled = false;
+    setLoadingConfig(true);
+    fetch('/api/maps/config')
+      .then((res) => (res.ok ? res.json() : { apiKey: '' }))
+      .then((data: { apiKey?: string }) => {
+        if (cancelled) return;
+        const key = typeof data?.apiKey === 'string' ? data.apiKey.trim() : '';
+        setMapsApiKey(key);
+        if (!key) {
+          setMapError('Google Maps API key is not configured for this environment.');
+        } else {
+          setMapError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMapError('Unable to load Google Maps configuration.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingConfig(false);
+        }
+      });
+
     return () => {
-      disposed = true;
-      if (rafId) window.cancelAnimationFrame(rafId);
-      if (timerId) window.clearTimeout(timerId);
-      resizeObserver?.disconnect();
-      if (createdMap) {
-        createdMap.remove();
-      }
-      mapRef.current = null;
-      tileLayerRef.current = null;
-      stationClusterRef.current = null;
-      gridLayerRef.current = null;
-      userMarkerLayerRef.current = null;
-      hotspotLayerRef.current = null;
-      iotLayerRef.current = null;
-      setMapReady(false);
+      cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initAttempt]);
 
-  // Sync basemap tiles with Light / Dark theme (with fallback to OSM if Carto is unreachable)
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady) return;
+  const initialCenter = useMemo(
+    () => ({
+      lat: Number.isFinite(activeLocation.lat) ? activeLocation.lat : 37.7749,
+      lng: Number.isFinite(activeLocation.lon) ? activeLocation.lon : -122.4194,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [theme, initAttempt]
+  );
 
-    if (tileLayerRef.current) {
-      map.removeLayer(tileLayerRef.current);
-      tileLayerRef.current = null;
-    }
-
-    const primaryUrl =
-      theme === 'dark'
-        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-        : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-    const primaryAttribution =
-      theme === 'dark'
-        ? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO'
-        : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-
-    const layer = L.tileLayer(primaryUrl, {
-      attribution: primaryAttribution,
-      maxZoom: 19,
-    });
-
-    let switchedToFallback = false;
-    layer.on('tileerror', () => {
-      if (switchedToFallback || theme !== 'dark' || !mapRef.current) return;
-      switchedToFallback = true;
-      if (tileLayerRef.current === layer) {
-        mapRef.current.removeLayer(layer);
-        const fallback = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '&copy; OpenStreetMap contributors',
-          maxZoom: 19,
-        }).addTo(mapRef.current);
-        tileLayerRef.current = fallback;
-      }
-    });
-
-    layer.addTo(map);
-    tileLayerRef.current = layer;
-  }, [theme, mapReady]);
-
-  // Pan & zoom map when activeLocation changes
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady) return;
-    if (!Number.isFinite(activeLocation.lat) || !Number.isFinite(activeLocation.lon)) return;
-    map.flyTo([activeLocation.lat, activeLocation.lon], Math.max(map.getZoom(), 11), {
-      duration: 0.7,
-    });
-  }, [activeLocation.lat, activeLocation.lon, mapReady]);
-
-  // Map click handler for placing manual markers
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady) return;
-
-    const container = map.getContainer();
-    container.style.cursor = addingMode ? 'crosshair' : '';
-
-    const onClick = (ev: L.LeafletMouseEvent) => {
-      if (!addingMode) return;
-      const lat = Number(ev.latlng.lat.toFixed(6));
-      const lon = Number(ev.latlng.lng.toFixed(6));
-      setDraftCoord({ lat, lon });
-      setEditingMarkerId(null);
-      setSelectedCustomMarker(null);
-      setSelectedStation(null);
+  const fetchPollutionForCoordinates = useCallback(
+    async (lat: number, lon: number, label: string) => {
+      setLoadingMarkerAir(true);
       setMarkerAirData(null);
-      setFormError(null);
-    };
-
-    map.on('click', onClick);
-    return () => {
-      map.off('click', onClick);
-      container.style.cursor = '';
-    };
-  }, [addingMode, mapReady]);
-
-  // Render draggable draft marker when placing or editing coordinates
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapReady) return;
-
-    if (draftMarkerRef.current) {
-      map.removeLayer(draftMarkerRef.current);
-      draftMarkerRef.current = null;
-    }
-
-    if (!draftCoord || !Number.isFinite(draftCoord.lat) || !Number.isFinite(draftCoord.lon)) {
-      return;
-    }
-
-    const dm = L.marker([draftCoord.lat, draftCoord.lon], {
-      draggable: true,
-      icon: createCustomPinIcon(markerType, true),
-    }).addTo(map);
-
-    dm.on('dragend', () => {
-      const pos = dm.getLatLng();
-      setDraftCoord({
-        lat: Number(pos.lat.toFixed(6)),
-        lon: Number(pos.lng.toFixed(6)),
-      });
-    });
-
-    draftMarkerRef.current = dm;
-  }, [draftCoord, markerType, mapReady]);
-
-  // Render ground monitoring stations (Clustered)
-  useEffect(() => {
-    const map = mapRef.current;
-    const cluster = stationClusterRef.current;
-    if (!map || !cluster || !mapReady) return;
-
-    cluster.clearLayers();
-    if (!layers.stations) {
-      if (map.hasLayer(cluster)) map.removeLayer(cluster);
-      return;
-    }
-    if (!map.hasLayer(cluster)) map.addLayer(cluster);
-
-    stations.forEach((st) => {
-      if (!Number.isFinite(st.lat) || !Number.isFinite(st.lon)) return;
-      const aqiVal = standard === 'EU_AQI' ? st.eu_aqi ?? st.us_aqi : st.us_aqi;
-      const cat = getAqiCategory(aqiVal, standard);
-      const label =
-        typeof aqiVal === 'number' && Number.isFinite(aqiVal)
-          ? String(Math.round(aqiVal))
-          : typeof st.pm2_5 === 'number' && Number.isFinite(st.pm2_5)
-            ? st.pm2_5.toFixed(0)
-            : '•';
-
-      const m = L.marker([st.lat, st.lon], {
-        icon: createCircleDivIcon(cat.colorHex, label),
-      });
-      m.on('click', () => {
-        setSelectedStation(st);
-        setSelectedCustomMarker(null);
-      });
-      cluster.addLayer(m);
-    });
-  }, [stations, layers.stations, standard, mapReady, clusterVersion]);
-
-  // Render Modeled Metro Grid overlay
-  useEffect(() => {
-    const group = gridLayerRef.current;
-    if (!group || !mapReady) return;
-    group.clearLayers();
-    if (!layers.grid) return;
-
-    modeledGrid.forEach((cell) => {
-      if (!Number.isFinite(cell.lat) || !Number.isFinite(cell.lon)) return;
-      const aqiVal = standard === 'EU_AQI' ? cell.eu_aqi : cell.us_aqi;
-      const cat = getAqiCategory(aqiVal, standard);
-      const circle = L.circle([cell.lat, cell.lon], {
-        radius: 1700,
-        color: cat.colorHex,
-        weight: 1,
-        opacity: 0.45,
-        fillColor: cat.colorHex,
-        fillOpacity: 0.16,
-      });
-      circle.on('click', () => {
-        setSelectedStation(cell);
-        setSelectedCustomMarker(null);
-      });
-      circle.addTo(group);
-    });
-  }, [modeledGrid, layers.grid, standard, mapReady]);
-
-  // Render ESP32 IoT Nodes
-  useEffect(() => {
-    const group = iotLayerRef.current;
-    if (!group || !mapReady) return;
-    group.clearLayers();
-    if (!layers.iot) return;
-
-    iotStations.forEach((node) => {
-      if (!Number.isFinite(node.lat) || !Number.isFinite(node.lon)) return;
-      const aqiVal = node.us_aqi;
-      const cat = getAqiCategory(aqiVal, standard);
-      const m = L.marker([node.lat, node.lon], {
-        icon: createCircleDivIcon(cat.colorHex, 'IoT', '#22d3ee'),
-      });
-      m.on('click', () => {
-        setSelectedStation(node);
-        setSelectedCustomMarker(null);
-      });
-      m.addTo(group);
-    });
-  }, [iotStations, layers.iot, standard, mapReady]);
-
-  // Render DBSCAN Hotspots
-  useEffect(() => {
-    const group = hotspotLayerRef.current;
-    if (!group || !mapReady) return;
-    group.clearLayers();
-    if (!layers.hotspots) return;
-
-    hotspots.forEach((hs) => {
-      if (
-        !Number.isFinite(hs.centroidLat) ||
-        !Number.isFinite(hs.centroidLon) ||
-        !Number.isFinite(hs.radiusKm)
-      ) {
-        return;
+      try {
+        const data = await api.getCurrentAirQuality(lat, lon, label);
+        setMarkerAirData(data);
+      } catch (err) {
+        console.error('Failed fetching coordinate air quality:', err);
+      } finally {
+        setLoadingMarkerAir(false);
       }
-      const color =
-        hs.severity === 'critical'
-          ? '#ef4444'
-          : hs.severity === 'high'
-            ? '#f97316'
-            : '#f59e0b';
-      const circle = L.circle([hs.centroidLat, hs.centroidLon], {
-        radius: Math.max(500, hs.radiusKm * 1000),
-        color,
-        weight: 2,
-        dashArray: '6 4',
-        fillColor: color,
-        fillOpacity: 0.18,
-      });
-      circle.bindPopup(
-        `<div style="font-size:12px;">
-          <strong>${hs.label}</strong><br/>
-          Peak ${hs.pollutant.toUpperCase()}: <b>${hs.peakValue}</b> (Threshold: ${hs.threshold})<br/>
-          Stations: ${hs.stationCount} · Severity: ${hs.severity.toUpperCase()}<br/>
-          <span style="opacity:0.75">${hs.isModeledSurface ? 'Modeled surface cluster' : 'Observed station cluster'}</span>
-        </div>`
-      );
-      circle.addTo(group);
-    });
-  }, [hotspots, layers.hotspots, mapReady]);
-
-  // Render Saved User Custom Markers (draggable when editing that marker)
-  useEffect(() => {
-    const group = userMarkerLayerRef.current;
-    if (!group || !mapReady) return;
-    group.clearLayers();
-    if (!layers.customMarkers) return;
-
-    markers.forEach((cm) => {
-      if (!Number.isFinite(cm.lat) || !Number.isFinite(cm.lon)) return;
-      // Skip rendering the static marker while it's actively being edited via draftMarkerRef
-      if (editingMarkerId === cm.id && draftCoord) return;
-
-      const m = L.marker([cm.lat, cm.lon], {
-        icon: createCustomPinIcon(cm.markerType || 'monitoring_point'),
-        draggable: false,
-      });
-      m.on('click', () => {
-        setSelectedCustomMarker(cm);
-        setSelectedStation(null);
-        void fetchPollutionForCoordinates(cm.lat, cm.lon, cm.name);
-      });
-      m.addTo(group);
-    });
-  }, [markers, layers.customMarkers, editingMarkerId, draftCoord, mapReady]);
-
-  const fetchPollutionForCoordinates = async (lat: number, lon: number, label: string) => {
-    setLoadingMarkerAir(true);
-    setMarkerAirData(null);
-    try {
-      const data = await api.getCurrentAirQuality(lat, lon, label);
-      setMarkerAirData(data);
-    } catch (err) {
-      console.error('Failed fetching coordinate air quality:', err);
-    } finally {
-      setLoadingMarkerAir(false);
-    }
-  };
+    },
+    []
+  );
 
   const handleLocateMe = () => {
     const fallbackToIp = async (reason?: string) => {
@@ -610,7 +555,7 @@ export function PollutionMap({
     setMarkerDesc(cm.description);
     setMarkerType(cm.markerType);
     setFormError(null);
-    mapRef.current?.panTo([cm.lat, cm.lon]);
+    setFocusTarget({ lat: cm.lat, lon: cm.lon, seq: Date.now() });
   };
 
   const cancelDraft = () => {
@@ -760,12 +705,244 @@ export function PollutionMap({
       {/* Main Map + Side Inspector Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
         <div className="lg:col-span-8 relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-[#070B14] min-h-[520px]">
-          <div ref={containerRef} className={`relative w-full ${mapHeightClass} min-h-[520px]`} />
+          <div className={`relative w-full ${mapHeightClass} min-h-[520px]`}>
+            {loadingConfig ? (
+              <div className="w-full h-full flex items-center justify-center text-xs text-slate-500 dark:text-slate-400">
+                Loading Google Maps configuration...
+              </div>
+            ) : mapsApiKey ? (
+              <APIProvider
+                apiKey={mapsApiKey}
+                libraries={['marker']}
+                language="en"
+                region="US"
+                onError={(err) => {
+                  console.error('Google Maps APIProvider error:', err);
+                  setMapError('Unable to load Google Maps Platform SDK.');
+                }}
+              >
+                <MapStatusMonitor onError={setMapError} />
+                <GoogleMap
+                  key={`${theme}-${initAttempt}`}
+                  mapId={DEMO_MAP_ID}
+                  defaultCenter={initialCenter}
+                  defaultZoom={12}
+                  colorScheme={theme === 'dark' ? ColorScheme.DARK : ColorScheme.LIGHT}
+                  gestureHandling="greedy"
+                  streetViewControl={false}
+                  fullscreenControl
+                  mapTypeControl={false}
+                  internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+                  style={{ width: '100%', height: '100%' }}
+                  onClick={(ev) => {
+                    if (addingMode && ev.detail.latLng) {
+                      const lat = Number(ev.detail.latLng.lat.toFixed(6));
+                      const lon = Number(ev.detail.latLng.lng.toFixed(6));
+                      setDraftCoord({ lat, lon });
+                      setEditingMarkerId(null);
+                      setSelectedCustomMarker(null);
+                      setSelectedStation(null);
+                      setSelectedHotspot(null);
+                      setMarkerAirData(null);
+                      setFormError(null);
+                      return;
+                    }
+                    setSelectedHotspot(null);
+                  }}
+                >
+                  <MapController
+                    activeLocation={activeLocation}
+                    addingMode={addingMode}
+                    focusTarget={focusTarget}
+                  />
 
-          {mapError && (
+                  {/* Modeled Metro Grid Circles */}
+                  {layers.grid &&
+                    modeledGrid.map((cell) => {
+                      if (!Number.isFinite(cell.lat) || !Number.isFinite(cell.lon)) return null;
+                      const aqiVal = standard === 'EU_AQI' ? cell.eu_aqi : cell.us_aqi;
+                      const cat = getAqiCategory(aqiVal, standard);
+                      return (
+                        <Circle
+                          key={`grid-${cell.id}`}
+                          center={{ lat: cell.lat, lng: cell.lon }}
+                          radius={1700}
+                          strokeColor={cat.colorHex}
+                          strokeOpacity={0.45}
+                          strokeWeight={1}
+                          fillColor={cat.colorHex}
+                          fillOpacity={0.16}
+                          clickable
+                          onClick={() => {
+                            setSelectedStation(cell);
+                            setSelectedCustomMarker(null);
+                            setSelectedHotspot(null);
+                          }}
+                        />
+                      );
+                    })}
+
+                  {/* DBSCAN Hotspot Circles */}
+                  {layers.hotspots &&
+                    hotspots.map((hs) => {
+                      if (
+                        !Number.isFinite(hs.centroidLat) ||
+                        !Number.isFinite(hs.centroidLon) ||
+                        !Number.isFinite(hs.radiusKm)
+                      ) {
+                        return null;
+                      }
+                      const color =
+                        hs.severity === 'critical'
+                          ? '#ef4444'
+                          : hs.severity === 'high'
+                            ? '#f97316'
+                            : '#f59e0b';
+                      return (
+                        <Circle
+                          key={`hotspot-${hs.id}`}
+                          center={{ lat: hs.centroidLat, lng: hs.centroidLon }}
+                          radius={Math.max(500, hs.radiusKm * 1000)}
+                          strokeColor={color}
+                          strokeOpacity={0.85}
+                          strokeWeight={2}
+                          fillColor={color}
+                          fillOpacity={0.2}
+                          clickable
+                          onClick={() => setSelectedHotspot(hs)}
+                        />
+                      );
+                    })}
+
+                  {/* Hotspot Details InfoWindow */}
+                  {selectedHotspot && (
+                    <InfoWindow
+                      position={{
+                        lat: selectedHotspot.centroidLat,
+                        lng: selectedHotspot.centroidLon,
+                      }}
+                      onCloseClick={() => setSelectedHotspot(null)}
+                    >
+                      <div className="text-xs text-slate-900 space-y-1 max-w-[220px]">
+                        <div className="font-semibold">{selectedHotspot.label}</div>
+                        <div>
+                          Peak {selectedHotspot.pollutant.toUpperCase()}:{' '}
+                          <strong>{selectedHotspot.peakValue}</strong> (Threshold:{' '}
+                          {selectedHotspot.threshold})
+                        </div>
+                        <div>
+                          Stations: {selectedHotspot.stationCount} · Severity:{' '}
+                          {selectedHotspot.severity.toUpperCase()}
+                        </div>
+                        <div className="text-[11px] text-slate-600">
+                          {selectedHotspot.isModeledSurface
+                            ? 'Modeled surface cluster'
+                            : 'Observed station cluster'}
+                        </div>
+                      </div>
+                    </InfoWindow>
+                  )}
+
+                  {/* Clustered Observed Monitoring Stations (AdvancedMarkerElement + MarkerClusterer) */}
+                  <ClusteredStationMarkers
+                    stations={stations}
+                    visible={layers.stations}
+                    standard={standard}
+                    onSelectStation={(st) => {
+                      setSelectedStation(st);
+                      setSelectedCustomMarker(null);
+                      setSelectedHotspot(null);
+                    }}
+                  />
+
+                  {/* ESP32 IoT Nodes */}
+                  {layers.iot &&
+                    iotStations.map((node) => {
+                      if (!Number.isFinite(node.lat) || !Number.isFinite(node.lon)) return null;
+                      const cat = getAqiCategory(node.us_aqi, standard);
+                      return (
+                        <AdvancedMarker
+                          key={`iot-${node.id}`}
+                          position={{ lat: node.lat, lng: node.lon }}
+                          title={`${node.name} (ESP32 IoT)`}
+                          anchorLeft="-50%"
+                          anchorTop="-50%"
+                          onClick={() => {
+                            setSelectedStation(node);
+                            setSelectedCustomMarker(null);
+                            setSelectedHotspot(null);
+                          }}
+                        >
+                          <StationPinContent color={cat.colorHex} label="IoT" ringColor="#22d3ee" />
+                        </AdvancedMarker>
+                      );
+                    })}
+
+                  {/* Saved Custom User Markers */}
+                  {layers.customMarkers &&
+                    markers.map((cm) => {
+                      if (!Number.isFinite(cm.lat) || !Number.isFinite(cm.lon)) return null;
+                      if (editingMarkerId === cm.id && draftCoord) return null;
+                      return (
+                        <AdvancedMarker
+                          key={cm.id}
+                          position={{ lat: cm.lat, lng: cm.lon }}
+                          title={cm.name}
+                          anchorLeft="-50%"
+                          anchorTop="-50%"
+                          onClick={() => {
+                            setSelectedCustomMarker(cm);
+                            setSelectedStation(null);
+                            setSelectedHotspot(null);
+                            void fetchPollutionForCoordinates(cm.lat, cm.lon, cm.name);
+                          }}
+                        >
+                          <CustomDiamondPin type={cm.markerType || 'monitoring_point'} />
+                        </AdvancedMarker>
+                      );
+                    })}
+
+                  {/* Draggable Draft Marker */}
+                  {draftCoord &&
+                    Number.isFinite(draftCoord.lat) &&
+                    Number.isFinite(draftCoord.lon) && (
+                      <AdvancedMarker
+                        position={{ lat: draftCoord.lat, lng: draftCoord.lon }}
+                        draggable
+                        zIndex={1000}
+                        anchorLeft="-50%"
+                        anchorTop="-50%"
+                        title="Drag to adjust custom marker coordinates"
+                        onDragEnd={(ev) => {
+                          if (!ev.latLng) return;
+                          const latVal =
+                            typeof ev.latLng.lat === 'function'
+                              ? ev.latLng.lat()
+                              : Number(ev.latLng.lat);
+                          const lngVal =
+                            typeof ev.latLng.lng === 'function'
+                              ? ev.latLng.lng()
+                              : Number(ev.latLng.lng);
+                          if (Number.isFinite(latVal) && Number.isFinite(lngVal)) {
+                            setDraftCoord({
+                              lat: Number(latVal.toFixed(6)),
+                              lon: Number(lngVal.toFixed(6)),
+                            });
+                          }
+                        }}
+                      >
+                        <CustomDiamondPin type={markerType} isDraft />
+                      </AdvancedMarker>
+                    )}
+                </GoogleMap>
+              </APIProvider>
+            ) : null}
+          </div>
+
+          {mapError && !loadingConfig && (
             <div className="absolute inset-0 z-[600] flex items-center justify-center bg-slate-950/85 p-6 text-center">
               <div className="max-w-md space-y-3 text-xs text-rose-300">
-                <div className="text-sm font-semibold text-white">Map Initialization Error</div>
+                <div className="text-sm font-semibold text-white">Google Maps Error</div>
                 <p>{mapError}</p>
                 <button
                   type="button"
@@ -782,7 +959,7 @@ export function PollutionMap({
           )}
 
           {addingMode && !draftCoord && (
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[500] px-3.5 py-2 rounded-lg bg-slate-950/90 text-slate-100 border border-cyan-500/50 text-xs shadow-lg">
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[500] px-3.5 py-2 rounded-lg bg-slate-950/90 text-slate-100 border border-cyan-500/50 text-xs shadow-lg pointer-events-none">
               Click anywhere on the map to place your custom marker, then drag to refine coordinates.
             </div>
           )}
@@ -790,7 +967,7 @@ export function PollutionMap({
           {/* Legend */}
           <div className="absolute bottom-3 left-3 z-[400] max-w-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-[#0D1526]/95 backdrop-blur-sm p-2.5 text-[11px] text-slate-700 dark:text-slate-300 shadow-md">
             <div className="font-semibold mb-1.5 text-slate-900 dark:text-slate-100">
-              {standard === 'EU_AQI' ? 'European AQI Scale' : 'US EPA AQI Scale'} & Symbols
+              {standard === 'EU_AQI' ? 'European AQI Scale' : 'US EPA AQI Scale'} &amp; Symbols
             </div>
             <div className="grid grid-cols-3 gap-x-2 gap-y-1 mb-2">
               <span className="inline-flex items-center gap-1">
@@ -1122,7 +1299,7 @@ export function PollutionMap({
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0D1526] p-4 space-y-2">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
                 <MapPin className="w-4 h-4 text-cyan-500" />
-                <span>Station & Marker Inspector</span>
+                <span>Station &amp; Marker Inspector</span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                 Click any monitoring station, modeled zone, or custom marker on the map to inspect readings, or click <strong>Add Marker</strong> to pin a custom location.
@@ -1170,7 +1347,8 @@ export function PollutionMap({
                         onClick={() => {
                           setSelectedCustomMarker(cm);
                           setSelectedStation(null);
-                          mapRef.current?.flyTo([cm.lat, cm.lon], 14);
+                          setSelectedHotspot(null);
+                          setFocusTarget({ lat: cm.lat, lon: cm.lon, zoom: 14, seq: Date.now() });
                           void fetchPollutionForCoordinates(cm.lat, cm.lon, cm.name);
                         }}
                         className="text-left flex-1 min-w-0"

@@ -36,6 +36,7 @@ export function OverviewPage({
   hotspots,
   standard,
   loading,
+  telemetryError,
   lastRefreshIso,
   wsConnected,
   autoSyncEnabled,
@@ -56,6 +57,7 @@ export function OverviewPage({
   hotspots: HotspotCluster[];
   standard: AqiStandard;
   loading: boolean;
+  telemetryError?: string | null;
   lastRefreshIso: string | null;
   wsConnected: boolean;
   autoSyncEnabled: boolean;
@@ -214,6 +216,28 @@ export function OverviewPage({
           </button>
         </div>
       </div>
+
+      {(telemetryError ||
+        (current?.providerErrors && current.providerErrors.length > 0)) && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs text-amber-800 dark:text-amber-200 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <strong>Open-Meteo / Provider Notice:</strong>{' '}
+              {telemetryError || current?.providerErrors.join(' · ')}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-xs font-medium whitespace-nowrap shrink-0 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Retry Sync</span>
+          </button>
+        </div>
+      )}
 
       {/* Top Hero Split: Primary AQI Indicator + Weather & Nearest Sensor */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
@@ -408,12 +432,6 @@ export function OverviewPage({
           threshold={35.4}
         />
       </div>
-
-      {current?.providerErrors && current.providerErrors.length > 0 && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-700 dark:text-amber-300">
-          <strong>Provider Notice:</strong> {current.providerErrors.join(' · ')}
-        </div>
-      )}
     </div>
   );
 }
