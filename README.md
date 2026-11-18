@@ -1,6 +1,6 @@
 # AetherGrid — AI-Based Smart City Pollution Management System
 
-A full-stack, real-time environmental monitoring platform combining live ground sensor observations (Sensor.Community & optional OpenAQ v3), modeled atmospheric estimates (Open-Meteo CAMS & Weather), interactive Leaflet + OpenStreetMap geospatial mapping with manual marker creation, Python 3.10 Random Forest forecasting, Haversine DBSCAN hotspot detection, ESP32 IoT sensor ingestion, and WebSocket live push alerts. live at https://pollution-management-system.onrender.com/
+A full-stack, real-time environmental monitoring platform combining live ground sensor observations (Sensor.Community & optional OpenAQ v3), modeled atmospheric estimates (Open-Meteo CAMS & Weather), interactive Leaflet + OpenStreetMap geospatial mapping with manual marker creation, Python 3.10 Random Forest forecasting, Haversine DBSCAN hotspot detection, ESP32 IoT sensor ingestion, and WebSocket live push alerts. live at https://pollution-management-system-1.onrender.com/
 
 ## Architecture Overview
 
